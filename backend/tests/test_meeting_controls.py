@@ -1,6 +1,6 @@
 """Tier 1 Zoom controls: waiting room, lock, roles, spotlight, security, private chat, feedback."""
 
-from conftest import receive_until
+from conftest import connected, receive_until
 
 
 def receive_matching(ws, kind, predicate):
@@ -58,9 +58,8 @@ def test_waiting_room_admit_remove_and_lock(client, meeting):
 def test_roles_cohost_make_host_and_spotlight(meeting):
     host, guest = meeting.join("Host", host=True), meeting.join("Guest")
     guest_id = guest["participant"]["id"]
-    with meeting.connect(host) as host_ws, meeting.connect(guest) as guest_ws:
+    with connected(meeting, host, guest) as ((host_ws, guest_ws), _):
         receive_until(host_ws, "peer-joined")
-        receive_until(guest_ws, "welcome")
 
         guest_ws.send_json({"type": "host:spotlight", "target": host["participant"]["id"]})
         assert receive_until(guest_ws, "error")["code"] == "NOT_HOST"
@@ -84,11 +83,10 @@ def test_roles_cohost_make_host_and_spotlight(meeting):
 def test_private_chat_and_security_permissions(client, meeting):
     host, a, b = meeting.join("Host", host=True), meeting.join("Alice"), meeting.join("Bob")
     host_id, a_id, b_id = (x["participant"]["id"] for x in (host, a, b))
-    with meeting.connect(host) as host_ws, meeting.connect(a) as a_ws, meeting.connect(b) as b_ws:
+    with connected(meeting, host, a, b) as ((host_ws, a_ws, b_ws), _):
         receive_until(host_ws, "peer-joined")
         receive_until(host_ws, "peer-joined")
         receive_until(a_ws, "peer-joined")
-        receive_until(b_ws, "welcome")
 
         # Private message: only sender and recipient get it.
         a_ws.send_json({"type": "chat", "text": "psst", "to": b_id})
@@ -122,9 +120,8 @@ def test_private_chat_and_security_permissions(client, meeting):
 def test_feedback_rename_and_lower_hands(meeting):
     host, guest = meeting.join("Host", host=True), meeting.join("Guest")
     guest_id = guest["participant"]["id"]
-    with meeting.connect(host) as host_ws, meeting.connect(guest) as guest_ws:
+    with connected(meeting, host, guest) as ((host_ws, guest_ws), _):
         receive_until(host_ws, "peer-joined")
-        receive_until(guest_ws, "welcome")
 
         guest_ws.send_json({"type": "feedback", "value": "slower"})
         assert receive_until(host_ws, "peer-updated")["peer"]["feedback"] == "slower"

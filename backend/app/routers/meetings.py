@@ -12,12 +12,14 @@ from ..schemas import (
     MeetingLookup,
     MeetingOut,
     ParticipantOut,
+    PollView,
     ScheduledMeetingCreate,
     ScheduledMeetingUpdate,
     TranscriptSegmentOut,
 )
 from ..security import create_ws_token
 from ..services import meetings as service
+from ..services import polls as poll_service
 from ..services.insights import build_insights
 
 router = APIRouter(prefix="/api/meetings", tags=["meetings"])
@@ -102,3 +104,9 @@ def get_transcript(code: str, db: DbSession, user: CurrentUser):
 @router.get("/{code}/insights", response_model=MeetingInsights)
 def get_insights(code: str, db: DbSession, user: CurrentUser):
     return build_insights(db, service.get_accessible_meeting(db, code, user))
+
+
+@router.get("/{code}/polls", response_model=list[PollView])
+def list_polls(code: str, db: DbSession, user: CurrentUser):
+    meeting = service.get_accessible_meeting(db, code, user)
+    return [poll_service.poll_view(p, with_results=True) for p in poll_service.list_polls(db, meeting.id)]

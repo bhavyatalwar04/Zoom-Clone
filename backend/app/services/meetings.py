@@ -6,7 +6,7 @@ Routers stay thin and call into this module; the realtime (WebSocket) layer uses
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import exists, or_, select
+from sqlalchemy import exists, or_, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from ..config import get_settings
@@ -17,9 +17,12 @@ from ..models import (
     Meeting,
     MeetingInvitee,
     MeetingParticipant,
+    MeetingRecording,
     MeetingStatus,
     MeetingType,
     ParticipantRole,
+    Poll,
+    PollStatus,
     TranscriptSegment,
     User,
 )
@@ -346,7 +349,7 @@ def end_abandoned_meetings(db: Session, connected_codes: set[str], grace: timede
         if meeting.meeting_code in connected_codes:
             continue
         last_join = max((p.joined_at for p in meeting.participants), default=meeting.started_at)
-        if last_join is None or last_join < cutoff:
+        if last_join is None or last_join <= cutoff:
             end_meeting(db, meeting.id)
             ended.append(meeting.meeting_code)
     return ended
@@ -363,4 +366,11 @@ def end_meeting(db: Session, meeting_id: int) -> None:
     for participant in meeting.participants:
         if participant.left_at is None:
             participant.left_at = now
+    # Anything still running when the meeting ends stops with it.
+    db.execute(update(Poll).where(Poll.meeting_id == meeting_id, Poll.status == PollStatus.OPEN).values(status=PollStatus.CLOSED, closed_at=now))
+    db.execute(
+        update(MeetingRecording)
+        .where(MeetingRecording.meeting_id == meeting_id, MeetingRecording.ended_at.is_(None))
+        .values(ended_at=now)
+    )
     db.commit()

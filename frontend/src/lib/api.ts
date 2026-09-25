@@ -5,6 +5,7 @@ import type {
   MeetingInsights,
   MeetingLookup,
   Participant,
+  PollView,
   ScheduleMeetingInput,
   TranscriptSegment,
   User,
@@ -62,6 +63,7 @@ export const api = {
   participants: (code: string) => request<Participant[]>(`/api/meetings/${encodeURIComponent(code)}/participants`),
   messages: (code: string) => request<ChatMessage[]>(`/api/meetings/${encodeURIComponent(code)}/messages`),
   transcript: (code: string) => request<TranscriptSegment[]>(`/api/meetings/${encodeURIComponent(code)}/transcript`),
+  polls: (code: string) => request<PollView[]>(`/api/meetings/${encodeURIComponent(code)}/polls`),
   insights: (code: string) => request<MeetingInsights>(`/api/meetings/${encodeURIComponent(code)}/insights`),
 
   createInstant: (data: { title?: string; host_video_on?: boolean } = {}) =>

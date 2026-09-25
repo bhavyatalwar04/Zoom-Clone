@@ -11,6 +11,7 @@ import {
   Keyboard,
   LayoutGrid,
   Link2,
+  ListChecks,
   Maximize,
   MessageSquare,
   Mic,
@@ -20,6 +21,7 @@ import {
   PictureInPicture2,
   ShieldCheck,
   SmilePlus,
+  Sparkles,
   UserPlus,
   Users,
   Video,
@@ -109,6 +111,7 @@ function DeviceMenu({
   title,
   activeId,
   onSelect,
+  children,
 }: {
   open: boolean;
   onClose: () => void;
@@ -117,6 +120,8 @@ function DeviceMenu({
   title: string;
   activeId: string | null;
   onSelect: (deviceId: string) => void;
+  /** Extra items under the device list (e.g. background effects for the camera). */
+  children?: React.ReactNode;
 }) {
   const devices = useDevices(kind, open);
   return (
@@ -136,6 +141,7 @@ function DeviceMenu({
           <span className="truncate">{d.label || `${title} ${i + 1}`}</span>
         </MenuItem>
       ))}
+      {children && <div className="mt-1 border-t border-white/10 pt-1">{children}</div>}
     </Popover>
   );
 }
@@ -155,13 +161,20 @@ export interface ToolbarProps {
   onFeedback: (value: Feedback | null) => void;
   participantCount: number;
   unreadMessages: number;
-  panel: "participants" | "chat" | null;
+  panel: "participants" | "chat" | "polls" | null;
   view: "gallery" | "speaker";
   activeDevices: { audio: string | null; video: string | null };
   onToggleAudio: () => void;
   onToggleVideo: () => void;
   onToggleShare: () => void;
-  onTogglePanel: (panel: "participants" | "chat") => void;
+  onTogglePanel: (panel: "participants" | "chat" | "polls") => void;
+  /** An open poll I haven't answered yet. */
+  pollPending: boolean;
+  /** I am recording (the Record button becomes Stop Recording). */
+  recording: boolean;
+  blurOn: boolean;
+  onToggleBlur: () => void;
+  onChooseBackground: () => void;
   onReaction: (emoji: string) => void;
   onToggleHand: () => void;
   onChangeView: (view: "gallery" | "speaker") => void;
@@ -268,7 +281,20 @@ export function Toolbar(props: ToolbarProps) {
             </span>
           }
         />
-        <ControlButton label="Record" onClick={props.onRecord} className="hidden xl:flex" icon={<CircleDot className="h-6 w-6" />} />
+        <ControlButton
+          label="Polls"
+          onClick={() => props.onTogglePanel("polls")}
+          active={props.panel === "polls"}
+          className="hidden lg:flex"
+          icon={<ListChecks className="h-6 w-6" />}
+          badge={props.pollPending ? "!" : null}
+        />
+        <ControlButton
+          label={props.recording ? "Stop Recording" : "Record"}
+          onClick={props.onRecord}
+          className="hidden xl:flex"
+          icon={<CircleDot className={clsx("h-6 w-6", props.recording && "text-[#ff4d4d]")} />}
+        />
         <ControlButton
           label={props.captionsOn ? "Hide Captions" : "Show Captions"}
           shortcut="Alt+C"
@@ -313,7 +339,16 @@ export function Toolbar(props: ToolbarProps) {
         title="Select a Camera"
         activeId={props.activeDevices.video}
         onSelect={props.onSelectCamera}
-      />
+      >
+        <MenuItem tone="dark" onClick={pick(props.onToggleBlur)} role="menuitemcheckbox" aria-checked={props.blurOn}>
+          <span className="w-4">{props.blurOn && <Check className="h-4 w-4 text-zoom-blue" />}</span>
+          Blur My Background
+        </MenuItem>
+        <MenuItem tone="dark" onClick={pick(props.onChooseBackground)}>
+          <span className="w-4" />
+          Choose Virtual Background…
+        </MenuItem>
+      </DeviceMenu>
 
       <Popover
         open={menu === "reactions"}
@@ -394,6 +429,15 @@ export function Toolbar(props: ToolbarProps) {
         </MenuItem>
         <MenuItem tone="dark" className="lg:hidden" icon={<Captions className="h-4 w-4" />} onClick={pick(props.onToggleCaptions)}>
           {props.captionsOn ? "Hide captions" : "Show captions"}
+        </MenuItem>
+        <MenuItem tone="dark" className="lg:hidden" icon={<ListChecks className="h-4 w-4" />} onClick={pick(() => props.onTogglePanel("polls"))}>
+          Polls
+        </MenuItem>
+        <MenuItem tone="dark" className="xl:hidden" icon={<CircleDot className="h-4 w-4" />} onClick={pick(props.onRecord)}>
+          {props.recording ? "Stop recording" : "Record"}
+        </MenuItem>
+        <MenuItem tone="dark" icon={<Sparkles className="h-4 w-4" />} onClick={pick(props.onChooseBackground)}>
+          Backgrounds & effects
         </MenuItem>
         <MenuItem tone="dark" icon={<FileText className="h-4 w-4" />} onClick={pick(props.onOpenTranscript)}>
           View full transcript

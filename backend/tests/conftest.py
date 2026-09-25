@@ -1,5 +1,6 @@
 import os
 import tempfile
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
 import pytest
@@ -46,6 +47,19 @@ def receive_until(ws, kind: str) -> dict:
         if message["type"] == kind:
             return message
     raise AssertionError(f"no {kind!r} message received")
+
+
+@contextmanager
+def connected(meeting, *joined):
+    """Connects people one at a time, each waiting for their welcome, so the join order (and
+    therefore who receives which `peer-joined`) is deterministic. Yields (sockets, welcomes)."""
+    with ExitStack() as stack:
+        sockets, welcomes = [], []
+        for person in joined:
+            ws = stack.enter_context(meeting.connect(person))
+            welcomes.append(receive_until(ws, "welcome"))
+            sockets.append(ws)
+        yield sockets, welcomes
 
 
 @pytest.fixture()

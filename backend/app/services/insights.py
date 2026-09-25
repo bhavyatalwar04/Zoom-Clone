@@ -8,8 +8,17 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..database import utcnow
-from ..models import ActivityKind, ChatMessage, Meeting, MeetingActivity, ParticipantRole, TranscriptSegment
-from ..schemas import EmojiCount, MeetingInsights, ParticipantInsight
+from ..models import (
+    ActivityKind,
+    ChatMessage,
+    Meeting,
+    MeetingActivity,
+    MeetingRecording,
+    ParticipantRole,
+    Poll,
+    TranscriptSegment,
+)
+from ..schemas import EmojiCount, MeetingInsights, ParticipantInsight, RecordingOut
 
 
 @dataclass
@@ -35,6 +44,21 @@ def _minutes(start: datetime | None, end: datetime | None) -> int:
     if start is None:
         return 0
     return max(0, round(((end or utcnow()) - start).total_seconds() / 60))
+
+
+def list_recordings(db: Session, meeting_id: int) -> list[RecordingOut]:
+    rows = db.scalars(
+        select(MeetingRecording).where(MeetingRecording.meeting_id == meeting_id).order_by(MeetingRecording.started_at)
+    ).all()
+    return [
+        RecordingOut(
+            recorded_by=r.participant.display_name,
+            started_at=r.started_at,
+            ended_at=r.ended_at,
+            duration_seconds=round(((r.ended_at or utcnow()) - r.started_at).total_seconds()),
+        )
+        for r in rows
+    ]
 
 
 def build_insights(db: Session, meeting: Meeting) -> MeetingInsights:
@@ -99,6 +123,8 @@ def build_insights(db: Session, meeting: Meeting) -> MeetingInsights:
         total_hand_raises=by_kind[ActivityKind.HAND_RAISE],
         screen_shares=by_kind[ActivityKind.SCREEN_SHARE],
         transcript_lines=sum(transcript.values()),
+        polls=db.scalar(select(func.count()).select_from(Poll).where(Poll.meeting_id == meeting.id)) or 0,
+        recordings=list_recordings(db, meeting.id),
         reactions_by_emoji=[EmojiCount(emoji=e, count=n) for e, n in emoji_rows if e],
         participants=participants,
     )

@@ -126,6 +126,42 @@ export interface MeetingInsights {
   total_hand_raises: number;
   screen_shares: number;
   transcript_lines: number;
+  polls: number;
+  recordings: RecordingInfo[];
   reactions_by_emoji: { emoji: string; count: number }[];
   participants: ParticipantInsight[];
+}
+export interface PollOptionView {
+  id: number;
+  text: string;
+  /** null while results are hidden from this viewer. */
+  votes: number | null;
+  voters: string[] | null;
+}
+
+export interface PollView {
+  id: number;
+  question: string;
+  allow_multiple: boolean;
+  is_anonymous: boolean;
+  status: "open" | "closed";
+  created_at: string;
+  closed_at: string | null;
+  options: PollOptionView[];
+  total_voters: number | null;
+  my_votes: number[];
+}
+
+export interface PollDraft {
+  question: string;
+  options: string[];
+  allow_multiple: boolean;
+  anonymous: boolean;
+}
+
+export interface RecordingInfo {
+  recorded_by: string;
+  started_at: string;
+  ended_at: string | null;
+  duration_seconds: number;
 }

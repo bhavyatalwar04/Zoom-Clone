@@ -2,9 +2,11 @@
 
 import { format } from "date-fns";
 import clsx from "clsx";
-import { ChartColumn, ChevronLeft, Copy, FileText, MessageSquare, Pencil, Trash2, Users } from "lucide-react";
+import { ChartColumn, ChevronLeft, Copy, FileText, ListChecks, MessageSquare, Pencil, Trash2, Users } from "lucide-react";
 import { useState } from "react";
 import useSWR from "swr";
+import { PollResults } from "@/components/polls/PollResults";
+import { TranscriptView } from "@/components/transcript/TranscriptView";
 import { Avatar } from "@/components/ui/Avatar";
 import { Button } from "@/components/ui/Button";
 import { useToast } from "@/components/ui/Toast";
@@ -12,9 +14,8 @@ import { api } from "@/lib/api";
 import { formatDayLabel, formatDuration, formatMeetingId, formatTimeRange, minutesBetween, timeZoneLabel } from "@/lib/format";
 import { buildInvitation } from "@/lib/invitation";
 import type { Meeting } from "@/lib/types";
-import { copyInvitation } from "./MeetingActionsMenu";
-import { TranscriptView } from "@/components/transcript/TranscriptView";
 import { InsightsView } from "./InsightsView";
+import { copyInvitation } from "./MeetingActionsMenu";
 import { MeetingJoinButton } from "./MeetingJoinButton";
 
 interface MeetingDetailsProps {
@@ -120,6 +121,7 @@ const HISTORY_TABS = [
   { id: "insights", label: "Insights", icon: ChartColumn },
   { id: "participants", label: "Participants", icon: Users },
   { id: "chat", label: "Chat", icon: MessageSquare },
+  { id: "polls", label: "Polls", icon: ListChecks },
   { id: "transcript", label: "Transcript", icon: FileText },
 ] as const;
 
@@ -132,6 +134,7 @@ function MeetingHistory({ code, title }: { code: string; title: string }) {
   const { data: participants } = useSWR(["participants", code], () => api.participants(code));
   const { data: messages } = useSWR(["messages", code], () => api.messages(code));
   const { data: transcript } = useSWR(["transcript", code], () => api.transcript(code));
+  const { data: polls } = useSWR(["polls", code], () => api.polls(code));
 
   // One row per person, even if they re-joined several times.
   const people = participants
@@ -195,6 +198,21 @@ function MeetingHistory({ code, title }: { code: string; title: string }) {
             ))}
           </ul>
         </>
+      )}
+
+      {tab === "polls" && (
+        <div className="space-y-4">
+          {polls?.length === 0 && <p className="text-sm text-muted">No polls were run in this meeting.</p>}
+          {polls?.map((poll) => (
+            <article key={poll.id} className="rounded-xl p-4 ring-1 ring-line">
+              <h3 className="mb-3 text-sm font-bold text-ink">{poll.question}</h3>
+              <PollResults poll={poll} />
+              <p className="mt-2 text-xs text-muted">
+                {poll.total_voters} {poll.total_voters === 1 ? "person" : "people"} answered{poll.is_anonymous && " · Anonymous"}
+              </p>
+            </article>
+          ))}
+        </div>
       )}
 
       {tab === "transcript" && (

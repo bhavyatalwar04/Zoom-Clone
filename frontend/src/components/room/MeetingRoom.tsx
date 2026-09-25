@@ -7,7 +7,10 @@ import { Button } from "@/components/ui/Button";
 import { Modal } from "@/components/ui/Modal";
 import { MenuItem, Popover } from "@/components/ui/Popover";
 import { useToast } from "@/components/ui/Toast";
+import { PollsPanel } from "@/components/polls/PollsPanel";
+import { PollVoteModal } from "@/components/polls/PollVoteModal";
 import { useActiveSpeaker } from "@/hooks/useActiveSpeaker";
+import { useMeetingRecorder } from "@/hooks/useMeetingRecorder";
 import { useMeetingShortcuts } from "@/hooks/useMeetingShortcuts";
 import { useNow } from "@/hooks/useNow";
 import { usePictureInPicture } from "@/hooks/usePictureInPicture";
@@ -17,13 +20,16 @@ import { useTalkTime } from "@/hooks/useTalkTime";
 import { WS_URL } from "@/lib/api";
 import { copyToClipboard } from "@/lib/invitation";
 import { type EndReason, isModerator, type RoomNotice, RoomClient } from "@/lib/rtc/room-client";
-import type { JoinResponse } from "@/lib/types";
+import type { RecorderSource } from "@/lib/recording/meeting-recorder";
+import type { JoinResponse, PollView } from "@/lib/types";
+import { BackgroundPicker } from "./BackgroundPicker";
 import { CaptionsOverlay } from "./CaptionsOverlay";
 import { ChatPanel } from "./ChatPanel";
 import { InviteModal, type InviteDetails } from "./InviteModal";
 import { EndTimeBanner, MeetingTimer } from "./MeetingClock";
 import { MeetingInfo } from "./MeetingInfo";
 import { ParticipantsPanel } from "./ParticipantsPanel";
+import { RecordingIndicator } from "./RecordingIndicator";
 import { RenameModal } from "./RenameModal";
 import { ShortcutsModal } from "./ShortcutsModal";
 import { Toolbar } from "./Toolbar";
@@ -33,7 +39,7 @@ import type { TileModel } from "./VideoTile";
 import { RemoteAudio } from "./VideoTile";
 import { WaitingRoomAlert, WaitingRoomScreen } from "./WaitingRoom";
 
-type Panel = "participants" | "chat" | "transcript";
+type Panel = "participants" | "chat" | "transcript" | "polls";
 
 interface MeetingRoomProps {
   join: JoinResponse;
@@ -106,6 +112,9 @@ export function MeetingRoom({ join, initialStream, audio, video, startShare, onE
   const [hideSelf, setHideSelf] = useState(false);
   const [hideNonVideo, setHideNonVideo] = useState(false);
   const [renameTarget, setRenameTarget] = useState<{ id: number; name: string; isSelf: boolean } | null>(null);
+  const [answering, setAnswering] = useState<PollView | null>(null);
+  const [backgroundsOpen, setBackgroundsOpen] = useState(false);
+  const seenPolls = useRef(new Set<number>());
 
   // Connect once; leaving the page (or unmounting) leaves the meeting and frees the devices.
   useEffect(() => {
@@ -208,12 +217,41 @@ export function MeetingRoom({ join, initialStream, audio, video, startShare, onE
     return [me, ...others];
   }, [room.self, room.peers, room.localStream, room.reactions, room.spotlightId, pinned, activeSpeaker, settings.mirrorVideo]);
 
+  // Recording: everyone's video (my screen while I share) and every audio track, mixed locally.
+  const recorderSources = useMemo<RecorderSource[]>(
+    () =>
+      tiles.map((t) =>
+        t.isSelf
+          ? { id: t.id, name: t.name, stream: room.screenStream ?? room.localStream, showVideo: !!(room.screenStream ?? room.localStream), screen: !!room.screenStream }
+          : { id: t.id, name: t.name, stream: t.stream, showVideo: t.showVideo, screen: t.screen },
+      ),
+    [tiles, room.screenStream, room.localStream],
+  );
+  const recorderAudio = useMemo(
+    () => [room.micTrack, ...room.peers.map((p) => p.stream?.getAudioTracks()[0] ?? null)].filter((t): t is MediaStreamTrack => !!t),
+    [room.micTrack, room.peers],
+  );
+  const recorder = useMeetingRecorder({
+    client,
+    title: join.meeting.title,
+    sources: recorderSources,
+    audioTracks: recorderAudio,
+    onError: (message) => toast.error(message),
+    onSaved: (filename) => toast.success(`Recording saved: ${filename}`),
+  });
+
   // A pin only applies while that person is still here.
   const pinnedId = pinned !== null && tiles.some((t) => t.id === pinned) ? pinned : null;
 
   const self = room.self;
   const isHost = self?.role === "host";
   const moderator = isModerator(self);
+  const pendingPoll = moderator ? undefined : room.polls.find((p) => p.status === "open" && !p.my_votes.length);
+  const toggleRecording = () => {
+    if (!moderator) return toast.info("Only the host and co-hosts can record this meeting.");
+    if (recorder.state === "idle") recorder.start();
+    else void recorder.stop();
+  };
   const captionsVisible = room.captionsEnabled && showCaptions;
 
   const togglePanel = (p: Panel) => setPanel((cur) => (cur === p ? null : p));
@@ -279,6 +317,13 @@ export function MeetingRoom({ join, initialStream, audio, video, startShare, onE
     setView(next);
     setViewMenu(false);
   };
+
+  // Pop the voting dialog up once for each new poll (participants only).
+  useEffect(() => {
+    if (!pendingPoll || seenPolls.current.has(pendingPoll.id)) return;
+    seenPolls.current.add(pendingPoll.id);
+    setAnswering(pendingPoll);
+  }, [pendingPoll]);
 
   if (room.status === "waiting") {
     return <WaitingRoomScreen title={room.waitingTitle} onLeave={() => client.leave("left")} />;
@@ -357,6 +402,16 @@ export function MeetingRoom({ join, initialStream, audio, video, startShare, onE
       <div className="flex min-h-0 flex-1">
         <main className={clsx("relative min-w-0 flex-1", panel && "hidden md:block")}>
           <EndTimeBanner scheduledStart={join.meeting.scheduled_start} durationMinutes={join.meeting.duration_minutes} now={now} />
+          <div className="absolute left-3 top-3 z-20">
+            <RecordingIndicator
+              mine={recorder.state}
+              elapsedMs={recorder.elapsedMs(now)}
+              onPause={recorder.pause}
+              onResume={recorder.resume}
+              onStop={() => void recorder.stop()}
+              othersRecording={recorder.state === "idle" ? room.recording.by : []}
+            />
+          </div>
           <VideoStage
             tiles={tiles}
             view={view}
@@ -406,6 +461,16 @@ export function MeetingRoom({ join, initialStream, audio, video, startShare, onE
             onClose={() => setPanel(null)}
           />
         )}
+        {panel === "polls" && (
+          <PollsPanel
+            polls={room.polls}
+            isModerator={moderator}
+            onLaunch={(draft) => client.launchPoll(draft)}
+            onEnd={(id) => client.endPoll(id)}
+            onAnswer={setAnswering}
+            onClose={() => setPanel(null)}
+          />
+        )}
         {panel === "transcript" && (
           <TranscriptPanel
             title={join.meeting.title}
@@ -444,7 +509,12 @@ export function MeetingRoom({ join, initialStream, audio, video, startShare, onE
         onCopyLink={async () => {
           if (await copyToClipboard(join.join_url)) toast.success("Invite link copied to clipboard");
         }}
-        onRecord={() => toast.info("Cloud recording is not available in this demo.")}
+        onRecord={toggleRecording}
+        recording={recorder.state !== "idle"}
+        pollPending={!!pendingPoll}
+        blurOn={room.background.kind === "blur"}
+        onToggleBlur={() => void client.setBackground(room.background.kind === "blur" ? { kind: "none" } : { kind: "blur" })}
+        onChooseBackground={() => setBackgroundsOpen(true)}
         captionsOn={captionsVisible}
         onToggleCaptions={toggleCaptions}
         onOpenTranscript={() => setPanel("transcript")}
@@ -463,6 +533,16 @@ export function MeetingRoom({ join, initialStream, audio, video, startShare, onE
 
       <InviteModal open={inviteOpen} onClose={() => setInviteOpen(false)} details={inviteDetails} />
       <ShortcutsModal open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
+      <PollVoteModal poll={answering} onClose={() => setAnswering(null)} onSubmit={(id, options) => client.votePoll(id, options)} />
+      <BackgroundPicker
+        open={backgroundsOpen}
+        onClose={() => setBackgroundsOpen(false)}
+        current={room.background}
+        loading={room.backgroundLoading}
+        preview={room.localStream}
+        mirror={settings.mirrorVideo}
+        onSelect={(effect) => void client.setBackground(effect)}
+      />
       <RenameModal
         target={renameTarget}
         onClose={() => setRenameTarget(null)}

@@ -1,4 +1,5 @@
-import type { ChatMessage, ParticipantRole, TranscriptSegment } from "../types";
+import type { ChatMessage, ParticipantRole, PollDraft, PollView, TranscriptSegment } from "../types";
+import { type BackgroundEffect, BackgroundProcessor } from "./background-processor";
 
 /**
  * RoomClient: everything that happens inside a meeting, framework independent.
@@ -123,6 +124,12 @@ export interface RoomSnapshot {
   /** Meeting title shown while I am in the waiting room. */
   waitingTitle: string | null;
   spotlightId: number | null;
+  polls: PollView[];
+  /** Who is recording this meeting right now (shown to everyone as a red indicator). */
+  recording: { active: boolean; by: string[] };
+  /** Background blur / virtual background applied to my camera. */
+  background: BackgroundEffect;
+  backgroundLoading: boolean;
   notice: { id: number; notice: RoomNotice } | null;
 }
 
@@ -143,7 +150,11 @@ type ServerMessage =
       security: Security;
       spotlight: number | null;
       waiting: WaitingPerson[];
+      polls: PollView[];
+      recording: { active: boolean; by: string[] };
     }
+  | { type: "poll"; poll: PollView }
+  | { type: "recording-state"; recording: { active: boolean; by: string[] } }
   | { type: "waiting"; title: string }
   | { type: "waiting-list"; waiting: WaitingPerson[] }
   | { type: "security"; security: Security }
@@ -209,6 +220,9 @@ export class RoomClient {
   private cameraTrack: MediaStreamTrack | null;
   private screenTrack: MediaStreamTrack | null = null;
   private audioEnabled: boolean;
+  /** Replaces the camera track with a blurred / virtual-background version while an effect is on. */
+  private processor: BackgroundProcessor | null = null;
+  private cameraQueue: Promise<void> = Promise.resolve();
 
   private snapshot: RoomSnapshot;
 
@@ -236,6 +250,10 @@ export class RoomClient {
       waiting: [],
       waitingTitle: null,
       spotlightId: null,
+      polls: [],
+      recording: { active: false, by: [] },
+      background: { kind: "none" },
+      backgroundLoading: false,
       notice: null,
     };
   }
@@ -323,6 +341,8 @@ export class RoomClient {
     this.ws = null;
     this.closeAllLinks();
     [this.audioTrack, this.cameraTrack, this.screenTrack].forEach((t) => t?.stop());
+    this.processor?.stop();
+    this.processor = null;
     this.update({ status: "closed", endReason: reason, peers: [], localStream: null, screenStream: null, micTrack: null });
   }
 
@@ -354,6 +374,8 @@ export class RoomClient {
           security: msg.security,
           spotlightId: msg.spotlight,
           waiting: msg.waiting,
+          polls: msg.polls,
+          recording: msg.recording,
           self: { ...msg.self, audio: this.audioEnabled, video: !!this.cameraTrack, screen: !!this.screenTrack },
           messages: msg.messages,
           transcript: msg.transcript,
@@ -382,6 +404,14 @@ export class RoomClient {
         break;
       case "waiting-list":
         this.update({ waiting: msg.waiting });
+        break;
+      case "poll": {
+        const others = this.snapshot.polls.filter((p) => p.id !== msg.poll.id);
+        this.update({ polls: [...others, msg.poll].sort((a, b) => a.id - b.id) });
+        break;
+      }
+      case "recording-state":
+        this.update({ recording: msg.recording });
         break;
       case "security":
         this.update({ security: msg.security });
@@ -468,7 +498,7 @@ export class RoomClient {
 
   /** Outgoing video is the screen while sharing, otherwise the camera (or nothing). */
   private get outgoingVideo(): MediaStreamTrack | null {
-    return this.screenTrack ?? this.cameraTrack;
+    return this.screenTrack ?? this.cameraOut;
   }
 
   private async callPeer(peerId: number) {
@@ -550,7 +580,7 @@ export class RoomClient {
 
   private buildLocalStream(): MediaStream | null {
     // Video only: the self view must never play back our own microphone.
-    return this.cameraTrack ? new MediaStream([this.cameraTrack]) : null;
+    return this.cameraOut ? new MediaStream([this.cameraOut]) : null;
   }
 
   private sendMediaState() {
@@ -608,8 +638,7 @@ export class RoomClient {
       this.cameraTrack?.stop();
       this.cameraTrack = null;
     }
-    if (!this.screenTrack) await this.replaceOutgoing("video", this.cameraTrack);
-    this.update({ localStream: this.buildLocalStream() });
+    await this.refreshCamera();
     this.sendMediaState();
   }
 
@@ -638,7 +667,7 @@ export class RoomClient {
     if (!this.screenTrack) return;
     this.screenTrack.stop();
     this.screenTrack = null;
-    await this.replaceOutgoing("video", this.cameraTrack);
+    await this.replaceOutgoing("video", this.cameraOut);
     this.update({ screenStream: null });
     this.sendMediaState();
   }
@@ -672,12 +701,60 @@ export class RoomClient {
       });
       this.cameraTrack?.stop();
       this.cameraTrack = stream.getVideoTracks()[0];
-      if (!this.screenTrack) await this.replaceOutgoing("video", this.cameraTrack);
-      this.update({ localStream: this.buildLocalStream() });
+      await this.refreshCamera();
       this.sendMediaState();
     } catch {
       this.notify({ kind: "media-error", message: "Unable to switch camera." });
     }
+  }
+
+  // ------------------------------------------------------------------ background effects
+
+  /** What leaves this device as "my camera": the processed track while an effect is on. */
+  private get cameraOut(): MediaStreamTrack | null {
+    return this.processor?.track ?? this.cameraTrack;
+  }
+
+  async setBackground(effect: BackgroundEffect) {
+    this.update({ background: effect });
+    await this.refreshCamera();
+  }
+
+  /**
+   * Re-applies the background effect to the current camera and sends the result. Calls are
+   * queued so quick successive changes (camera toggled while the model loads) can't overlap.
+   */
+  private refreshCamera(): Promise<void> {
+    this.cameraQueue = this.cameraQueue.then(async () => {
+      const effect = this.snapshot.background;
+      const camera = this.cameraTrack;
+      if (effect.kind === "none" || !camera) {
+        this.processor?.stop();
+        this.processor = null;
+      } else if (this.processor?.input === camera) {
+        this.processor.setEffect(effect);
+      } else {
+        this.processor?.stop();
+        this.processor = null;
+        this.update({ backgroundLoading: true });
+        try {
+          this.processor = await BackgroundProcessor.create(camera, effect);
+        } catch {
+          this.notify({ kind: "media-error", message: "Couldn't load background effects. Check your connection." });
+          this.update({ background: { kind: "none" } });
+        }
+        this.update({ backgroundLoading: false });
+        if (this.cameraTrack !== camera) {
+          // The camera changed while the model was loading; the next queued call handles it.
+          this.processor?.stop();
+          this.processor = null;
+          return;
+        }
+      }
+      if (!this.screenTrack) await this.replaceOutgoing("video", this.cameraOut);
+      this.update({ localStream: this.buildLocalStream() });
+    });
+    return this.cameraQueue;
   }
 
   // ------------------------------------------------------------------ meeting actions
@@ -712,6 +789,25 @@ export class RoomClient {
     setTimeout(() => {
       this.update({ reactions: this.snapshot.reactions.filter((r) => r.key !== reaction.key) });
     }, REACTION_TTL_MS);
+  }
+
+  // ------------------------------------------------------------------ polls & recording
+
+  launchPoll(draft: PollDraft) {
+    this.send({ type: "host:poll-launch", ...draft });
+  }
+
+  votePoll(pollId: number, optionIds: number[]) {
+    this.send({ type: "poll-vote", poll_id: pollId, option_ids: optionIds });
+  }
+
+  endPoll(pollId: number) {
+    this.send({ type: "host:poll-end", poll_id: pollId });
+  }
+
+  /** Tell everyone I started / stopped recording (the recording itself happens locally). */
+  setRecording(active: boolean) {
+    this.send({ type: "host:recording", active });
   }
 
   /** Host / co-host commands; the server checks the role again. */

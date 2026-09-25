@@ -159,6 +159,12 @@ export function InsightsView({ insights }: { insights: MeetingInsights }) {
             <li>{insights.total_hand_raises} raised hand{insights.total_hand_raises === 1 ? "" : "s"}</li>
             <li>{insights.screen_shares} screen share{insights.screen_shares === 1 ? "" : "s"}</li>
             <li>{insights.transcript_lines} transcript line{insights.transcript_lines === 1 ? "" : "s"}</li>
+            <li>{insights.polls} poll{insights.polls === 1 ? "" : "s"}</li>
+            {insights.recordings.map((r, i) => (
+              <li key={i}>
+                Recorded locally by {r.recorded_by} ({formatTalk(r.duration_seconds)})
+              </li>
+            ))}
           </ul>
         </div>
       </section>

@@ -17,11 +17,13 @@ from ..models import (
     Meeting,
     MeetingActivity,
     MeetingParticipant,
+    MeetingRecording,
     MeetingStatus,
     ParticipantRole,
     TranscriptSegment,
 )
 from ..services import meetings as meeting_service
+from ..services import polls as poll_service
 
 HISTORY_LIMIT = 200
 T = TypeVar("T")
@@ -160,3 +162,55 @@ def end_meeting(meeting_id: int) -> None:
 def end_abandoned(connected_codes: set[str], grace: timedelta) -> list[str]:
     with SessionLocal() as session:
         return meeting_service.end_abandoned_meetings(session, connected_codes, grace)
+
+
+# --------------------------------------------------------------------------- polls
+
+
+def poll_create(meeting_id: int, participant_id: int, data: dict[str, Any]):
+    with SessionLocal() as session:
+        return poll_service.create_poll(
+            session,
+            meeting_id,
+            participant_id,
+            data.get("question", ""),
+            data.get("options") if isinstance(data.get("options"), list) else [],
+            allow_multiple=data.get("allow_multiple") is True,
+            anonymous=data.get("anonymous") is True,
+        )
+
+
+def poll_vote(meeting_id: int, participant_id: int, poll_id: int, option_ids: list[int]):
+    with SessionLocal() as session:
+        return poll_service.vote(session, poll_id, meeting_id, participant_id, option_ids)
+
+
+def poll_close(meeting_id: int, poll_id: int):
+    with SessionLocal() as session:
+        return poll_service.close_poll(session, poll_id, meeting_id)
+
+
+def polls_for(meeting_id: int):
+    with SessionLocal() as session:
+        return poll_service.list_polls(session, meeting_id)
+
+
+# --------------------------------------------------------------------------- recordings
+
+
+def recording_start(meeting_id: int, participant_id: int) -> int:
+    with SessionLocal() as session:
+        recording = MeetingRecording(meeting_id=meeting_id, participant_id=participant_id)
+        session.add(recording)
+        session.commit()
+        return recording.id
+
+
+def recording_stop(recording_id: int) -> None:
+    with SessionLocal() as session:
+        session.execute(
+            update(MeetingRecording)
+            .where(MeetingRecording.id == recording_id, MeetingRecording.ended_at.is_(None))
+            .values(ended_at=utcnow())
+        )
+        session.commit()

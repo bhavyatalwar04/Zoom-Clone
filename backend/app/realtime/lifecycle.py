@@ -22,7 +22,8 @@ CLOSE_ENDED = 4004
 CLOSE_UNAUTHORIZED = 4401
 
 # Features (polls, whiteboard, breakout rooms, ...) add their state to the welcome message here.
-WelcomeExtension = Callable[[Room, Peer], dict[str, Any]]
+# An extension may be sync or async (e.g. when it reads the database).
+WelcomeExtension = Callable[[Room, Peer], Any]
 welcome_extensions: list[WelcomeExtension] = []
 # ...and clean up after a peer leaves here.
 LeaveHook = Callable[[Room, Peer], Any]
@@ -64,37 +65,49 @@ async def put_in_waiting_room(room: Room, peer: Peer, title: str) -> None:
 
 
 async def admit(room: Room, peer: Peer) -> None:
-    """Moves a peer into the meeting: welcome for them, `peer-joined` for everyone in their group."""
+    """Moves a peer into the meeting: welcome for them, `peer-joined` for everyone in their group.
+
+    Ordering matters for WebRTC: the newcomer sends an offer to every peer listed in its
+    welcome, and everyone told `peer-joined` waits for that offer. So the welcome's peer list
+    and the `peer-joined` recipients must be exactly the same people. All the awaiting (database
+    reads) therefore happens first, and joining the room + choosing both lists happens in one
+    step with no `await` in between, so two people joining at the same moment can't interleave.
+    """
+    history = await db(store.load_history, room.meeting_id, peer.participant_id)
+    extras: dict[str, Any] = {}
+    for extension in welcome_extensions:
+        extra = extension(room, peer)
+        extras.update(await extra if asyncio.iscoroutine(extra) else extra)
+
+    # ---- no awaits from here until the messages are queued ----
     was_waiting = room.waiting.pop(peer.participant_id, None) is not None
     room.admitted.add(peer.participant_id)
-
     # "Allow participants to unmute themselves" is off: newcomers join muted.
     force_mute = peer.audio and not room.security.allow_unmute and not peer.is_moderator
     if force_mute:
         peer.audio = False
-
     previous = rooms.add_peer(room, peer)
-    if previous is not None and previous is not peer:
-        await close_socket(previous.websocket, CLOSE_REPLACED)
-
-    history = await db(store.load_history, room.meeting_id, peer.participant_id)
+    others = [p for p in room.members(peer.group) if p.participant_id != peer.participant_id]
     payload: dict[str, Any] = {
         "type": "welcome",
         "self": peer.public(),
-        "peers": [p.public() for p in room.members(peer.group) if p.participant_id != peer.participant_id],
+        "peers": [p.public() for p in others],
         "messages": history["messages"],
         "transcript": history["transcript"],
         "captions_enabled": room.captions_enabled,
         "security": room.security.to_dict(),
         "spotlight": room.spotlight_id,
         "waiting": waiting_list(room) if peer.is_moderator else [],
+        **extras,
     }
-    for extension in welcome_extensions:
-        payload.update(extension(room, peer))
-    await rooms.send(peer, payload)
+    joined = {"type": "peer-joined", "peer": peer.public()}
+    await asyncio.gather(rooms.send(peer, payload), *(rooms.send(p, joined) for p in others))
+    # ---------------------------------------------------------------
+
+    if previous is not None and previous is not peer:
+        await close_socket(previous.websocket, CLOSE_REPLACED)
     if force_mute:
         await rooms.send(peer, {"type": "force-mute"})
-    await rooms.broadcast(room, {"type": "peer-joined", "peer": peer.public()}, exclude=peer.participant_id, group=peer.group)
     if was_waiting:
         await notify_waiting_list(room)
 

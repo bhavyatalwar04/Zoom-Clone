@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from .models import MeetingStatus, MeetingType, ParticipantRole
+from .models import MeetingStatus, MeetingType, ParticipantRole, PollStatus
 
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _PASSCODE_RE = re.compile(r"^[A-Za-z0-9@_*-]{1,10}$")
@@ -198,6 +198,36 @@ class TranscriptSegmentOut(BaseModel):
     spoken_at: datetime
 
 
+# --------------------------------------------------------------------------- polls & recordings
+
+
+class PollOptionView(BaseModel):
+    id: int
+    text: str
+    votes: int | None = None  # hidden from participants until the poll ends
+    voters: list[str] | None = None  # only for non-anonymous polls, only with results
+
+
+class PollView(BaseModel):
+    id: int
+    question: str
+    allow_multiple: bool
+    is_anonymous: bool
+    status: PollStatus
+    created_at: datetime
+    closed_at: datetime | None
+    options: list[PollOptionView]
+    total_voters: int | None = None
+    my_votes: list[int] = Field(default_factory=list)
+
+
+class RecordingOut(BaseModel):
+    recorded_by: str
+    started_at: datetime
+    ended_at: datetime | None
+    duration_seconds: int
+
+
 # --------------------------------------------------------------------------- insights
 
 
@@ -229,6 +259,8 @@ class MeetingInsights(BaseModel):
     total_hand_raises: int
     screen_shares: int
     transcript_lines: int
+    polls: int
+    recordings: list[RecordingOut]
     reactions_by_emoji: list[EmojiCount]
     participants: list[ParticipantInsight]
 
