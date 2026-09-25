@@ -32,7 +32,13 @@ A working clone of the **Zoom Workplace** web app. You can start instant meeting
 ### Bonus
 - **Host controls**: *Mute all*, mute or *ask to unmute* one person, stop someone's video, **remove a participant**, and **end the meeting for everyone**. If the host leaves without ending, host controls pass to the person who has been in the meeting longest, as in Zoom.
 - **Responsive layout**: desktop, tablet and mobile (the side panels become full-screen overlays and the toolbar shrinks)
-- **Meetings page**: Upcoming / Previous tabs with a details pane. Past meetings have Insights, Participants, Chat and Transcript tabs.
+- **Meetings page**: Upcoming / Previous / Personal Room tabs with a details pane. Past meetings have Insights, Participants, Chat, Polls, Transcript and Whiteboard tabs.
+- **User authentication (sign up / sign in)**. It's optional, so the brief's "assume a default user" still holds (see *Accounts* below).
+
+### Accounts, recurring meetings and Personal Meeting ID
+- **Sign up / Sign in** (`/signup`, `/signin`). Passwords are stored as salted PBKDF2-SHA256 hashes using only the standard library. The session is a signed, 7-day bearer token. **Without signing in you use the demo account**, so nothing in the brief needs a login. Signed-in users see their own meetings, and every account gets a Personal Meeting ID. The seeded accounts can sign in with password `zoom1234`, e.g. `bhavya.talwar@example.com` or `priya.sharma@example.com`.
+- **Personal Meeting ID (PMI).** A permanent 10-digit meeting room per user, shown in the profile menu (with *copy link*) and in **Meetings → Personal Room**. It's protected by a waiting room by default. Tick **New meeting ⌄ → Use my Personal Meeting ID** to start it instead of a fresh meeting.
+- **Recurring meetings.** *Daily / Weekly / Monthly*, *repeat every N*, ending *after N occurrences* or *by a date*. All occurrences share one Meeting ID and link, as in Zoom. Occurrences are **computed, not stored**, and are generated in the organiser's time zone: "every Monday at 10:00" stays at 10:00 across daylight-saving changes, and a monthly meeting on the 31st falls on the last day of shorter months. Upcoming meetings list each occurrence (with a ⟳ icon), and the details and invitation read like Zoom's (*"Every week on Thu, 8 occurrences"*).
 
 ### Zoom meeting controls
 - **Waiting room.** Turn it on when scheduling, or live from **Security**. Attendees wait on a *"Please wait, the meeting host will let you in soon"* screen. Hosts get a pop-up with **Admit** and a Waiting Room section in Participants (**Admit**, **Remove**, **Admit all**). Turning the waiting room off admits everyone waiting.
@@ -92,6 +98,8 @@ npm run dev
 ```
 
 ### 3. Try a call
+You're using the demo account straight away (sign-in is optional). Seeded accounts use password `zoom1234`.
+
 1. Open http://localhost:3000 and click **New meeting**, then **Start**.
 2. Open **Participants → Invite → Copy Invite Link**. Paste the link into another browser window, or an incognito window, and join with a different name.
 3. Both windows now show each other's video. Try chat, reactions, screen share, and the host's **Mute All**, **Remove** and **End → End meeting for all**.
@@ -101,16 +109,22 @@ npm run dev
 ```bash
 cd backend
 pip install -r requirements-dev.txt
-pytest                      # 12 tests: REST + WebSocket
+pytest                      # 24 tests: REST + WebSocket
 
 cd ../frontend
-npm test                    # 15 unit tests (Vitest)
+npm test                    # 17 unit tests (Vitest)
 ```
 
-- **Backend:** scheduling and validation; the join rules (passcode, waiting for host, host start token); access control on meeting details; ending abandoned meetings; and the full WebSocket flow (signalling relay, chat persistence, host-only actions, remove, end meeting, host handoff, captions/transcript, talk time and insights).
-- **Frontend:** Meeting ID and invite-link parsing, time-zone conversion, formatting, the invitation text, and the end-of-meeting countdown logic.
+- **Backend:**
+  - scheduling, validation and recurrence (daylight saving, month ends, how a series ends)
+  - join rules (passcode, waiting for host, host start token, locked meetings) and access control
+  - sign-up, sign-in and bearer tokens; the Personal Meeting ID
+  - ending abandoned meetings
+  - the full WebSocket flow: signalling, chat (private and per breakout room), waiting room, roles and permissions, host handoff, captions and transcript, polls, recording, breakout rooms, whiteboard and insights
+- **Frontend:** Meeting ID and invite-link parsing, time-zone conversion, formatting, recurrence descriptions, the invitation text, and the end-of-meeting countdown.
+- **Browser end-to-end:** each feature was also run in real headless Chromium, with two or three participants on fake camera and microphone devices. These scripts are not committed.
 
-> The schema changed when captions and insights were added. There are no migrations, so if you ran an earlier version, rebuild your local database with `python -m app.seed --reset`.
+> There are no migrations. The schema grew as features were added, so if you ran an earlier version, rebuild your local database with `python -m app.seed --reset`.
 
 ---
 
@@ -124,8 +138,8 @@ npm test                    # 15 unit tests (Vitest)
 │        └──────────── WebRTC audio/video (peer-to-peer) ────────────► peers  │
 └─────────────────────────────────────────────────────────────────────────────┘
 ┌──────────────────────────────── FastAPI ────────────────────────────────────┐
-│ routers/  (thin HTTP/WS layer) → services/meetings.py (business rules)      │
-│ services/rooms.py (in-memory room registry) → SQLAlchemy models → SQLite    │
+│ routers/  (thin REST layer) → services/ (business rules) → models/ → SQLite  │
+│ realtime/ (WebSocket: in-memory rooms + one handler module per feature)     │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -136,16 +150,18 @@ npm test                    # 15 unit tests (Vitest)
 | `main.py` | App factory, CORS, router registration, startup (create tables + seed) |
 | `config.py` | Settings from environment variables |
 | `database.py` | Engine and session, SQLite foreign keys, `UTCDateTime` column type |
-| `models.py` | SQLAlchemy schema (see below) |
-| `schemas.py` | Pydantic request/response models and validation (time zones, emails, passcodes) |
-| `services/meetings.py` | Business logic: create, schedule, list upcoming/recent, join rules, access checks, end, end abandoned meetings |
+| `models/` | SQLAlchemy schema, one module per area: `user`, `meeting`, `participant`, `engagement` (chat, transcript, activity, recordings), `polls`, `collaboration` (breakout rooms, whiteboard) |
+| `schemas.py` | Pydantic request/response models and validation (time zones, emails, passcodes, recurrence) |
+| `services/meetings.py` | Business logic: create, schedule, Personal Meeting Room, list upcoming (including recurring occurrences) and recent, join rules, access checks, end, end abandoned meetings |
+| `services/recurrence.py` | Computes the occurrences of recurring meetings in the organiser's time zone |
+| `services/polls.py` | Poll creation, voting rules and result views |
 | `services/insights.py` | Post-meeting insights, computed with `GROUP BY` queries over chat, transcript and activity rows |
-| `routers/meetings.py`, `routers/users.py` | REST endpoints |
+| `routers/auth.py`, `routers/meetings.py`, `routers/users.py` | REST endpoints |
 | `realtime/socket.py` | WebSocket endpoint: authenticates a participant, admits them or sends them to the waiting room, and passes each message to its handler |
 | `realtime/handlers/` | One module per feature (`basics`, `chat`, `moderation`, `polls`, `recording`, `breakout`, `whiteboard`). Each message type is registered with `@on("type", Access.X)`, and `dispatch` checks the sender's role before calling it. |
 | `realtime/lifecycle.py` | Admit, waiting room, leave, remove, host handoff, end meeting, and the sweeper that ends abandoned meetings |
 | `realtime/state.py`, `realtime/store.py` | In-memory room state (peers, waiting room, security, groups), and database helpers run in a thread pool |
-| `security.py` | Meeting ID / passcode / token generation, HMAC-signed WebSocket tokens |
+| `security.py` | Meeting ID / PMI / passcode generation, password hashing, signed session and WebSocket tokens |
 | `seed.py` | Sample users and meetings, generated relative to "now" |
 
 ### Frontend layout (`frontend/src`)
@@ -154,7 +170,9 @@ npm test                    # 15 unit tests (Vitest)
 |---|---|
 | `app/(workspace)/` | Pages that share the top navigation: Home, Meetings, Contacts, Team Chat |
 | `app/j/[code]/` | Invite link and meeting room route |
-| `app/join/` | Standalone "Join Meeting" page |
+| `app/join/`, `app/signin/`, `app/signup/` | Standalone "Join Meeting", sign-in and sign-up pages |
+| `components/polls/`, `components/breakout/`, `components/whiteboard/` | Polls panel and results, breakout rooms panel and banners, interactive and read-only whiteboard |
+| `lib/recording/`, `lib/rtc/background-processor.ts`, `lib/whiteboard/` | Meeting recorder, on-device background effects, whiteboard rendering and hit-testing |
 | `components/ui/` | Reusable primitives: Button, Modal, Popover, Avatar, Field, Checkbox/Switch, Toast |
 | `components/home/`, `components/meetings/` | Dashboard cards, schedule/join dialogs, meeting details |
 | `components/room/` | Pre-join, meeting room, video stage/tiles, toolbar, participants/chat/transcript panels, captions overlay, timer |
@@ -176,17 +194,27 @@ erDiagram
     users ||--o{ meeting_invitees : "is invited (nullable: external email)"
     meetings ||--o{ meeting_invitees : invites
     meetings ||--o{ meeting_participants : "has attendance"
-    meetings ||--o{ chat_messages : contains
-    meeting_participants ||--o{ chat_messages : sends
-    meetings ||--o{ transcript_segments : "has transcript"
+    meeting_participants ||--o{ chat_messages : "sends / receives (private)"
     meeting_participants ||--o{ transcript_segments : speaks
-    meetings ||--o{ meeting_activities : logs
     meeting_participants ||--o{ meeting_activities : performs
+    meeting_participants ||--o{ meeting_recordings : records
+    meetings ||--o{ polls : runs
+    polls ||--o{ poll_options : offers
+    polls ||--o{ poll_votes : receives
+    poll_options ||--o{ poll_votes : "chosen in"
+    meeting_participants ||--o{ poll_votes : casts
+    meetings ||--o{ breakout_rooms : "splits into"
+    breakout_rooms ||--o{ breakout_assignments : hosts
+    meeting_participants ||--o{ breakout_assignments : visits
+    breakout_rooms ||--o{ chat_messages : "has its own chat"
+    meetings ||--o{ whiteboard_strokes : "has a board"
 
     users {
         int id PK
         string full_name
         string email UK
+        string password_hash "PBKDF2, nullable"
+        string personal_meeting_id UK "10-digit PMI"
         string avatar_color
         string job_title
         string timezone
@@ -194,23 +222,27 @@ erDiagram
     }
     meetings {
         int id PK
-        string meeting_code UK "11-digit public Meeting ID"
+        string meeting_code UK "11-digit ID, or the host's PMI"
         string title
         text description
         int host_id FK
-        enum meeting_type "instant | scheduled"
+        enum meeting_type "instant | scheduled | personal"
         enum status "scheduled | live | ended"
-        datetime scheduled_start "UTC, required if scheduled"
+        datetime scheduled_start "UTC, first occurrence"
         int duration_minutes "CHECK > 0"
         string timezone "IANA zone chosen when scheduling"
+        enum recurrence "daily | weekly | monthly, nullable"
+        int recurrence_interval "CHECK >= 1"
+        int recurrence_count "CHECK: count or until"
+        datetime recurrence_until
         string passcode "nullable"
         string start_token "host-only secret"
+        bool waiting_room
+        bool is_locked "Security menu"
         bool join_before_host
         bool mute_on_entry
         bool host_video_on
         bool participant_video_on
-        datetime created_at
-        datetime updated_at
         datetime started_at
         datetime ended_at
     }
@@ -225,7 +257,7 @@ erDiagram
         int meeting_id FK
         int user_id FK "nullable"
         string display_name
-        enum role "host | attendee"
+        enum role "host | co_host | attendee"
         datetime joined_at
         datetime left_at
         bool was_removed
@@ -234,7 +266,9 @@ erDiagram
     chat_messages {
         int id PK
         int meeting_id FK
-        int participant_id FK
+        int participant_id FK "sender"
+        int recipient_participant_id FK "NULL = to everyone"
+        int breakout_room_id FK "NULL = main session"
         text content
         datetime sent_at
     }
@@ -253,6 +287,56 @@ erDiagram
         string detail "emoji for reactions"
         datetime created_at "INDEX(meeting_id, kind)"
     }
+    meeting_recordings {
+        int id PK
+        int meeting_id FK
+        int participant_id FK
+        datetime started_at
+        datetime ended_at
+    }
+    polls {
+        int id PK
+        int meeting_id FK
+        int created_by_participant_id FK
+        text question
+        bool allow_multiple
+        bool is_anonymous
+        enum status "open | closed"
+    }
+    poll_options {
+        int id PK
+        int poll_id FK
+        int position "UNIQUE(poll_id, position)"
+        string text
+    }
+    poll_votes {
+        int id PK
+        int poll_id FK
+        int option_id FK
+        int participant_id FK "UNIQUE(poll, option, participant)"
+    }
+    breakout_rooms {
+        int id PK
+        int meeting_id FK
+        string name
+        int position
+        datetime opened_at
+        datetime closed_at
+    }
+    breakout_assignments {
+        int id PK
+        int breakout_room_id FK
+        int participant_id FK
+        datetime joined_at
+        datetime left_at
+    }
+    whiteboard_strokes {
+        int id PK
+        int meeting_id FK
+        int participant_id FK
+        string stroke_key "UNIQUE(meeting_id, stroke_key)"
+        text data "JSON: tool, colour, width, points"
+    }
 ```
 
 **Design decisions**
@@ -260,8 +344,10 @@ erDiagram
 - **Public ID vs. primary key.** URLs use the random 11-digit `meeting_code`, never the auto-increment `id`, so meetings can't be enumerated. The code is unique and indexed.
 - **Invite links are derived, not stored.** `join_url` is built from `FRONTEND_URL + meeting_code + passcode` when the API responds. Storing it would leave stale links if the domain changes.
 - **Guests are first-class.** `user_id` is nullable on participants and invitees, so people without an account (invite-link guests, external emails) are still recorded. Invitees whose email matches a user are linked, which is how meetings you're invited to appear on *your* dashboard.
-- **Integrity in the database.** Foreign keys use `ON DELETE CASCADE` (SQLite's `PRAGMA foreign_keys` is turned on for every connection). `CHECK` constraints enforce a positive duration and require a start time on scheduled meetings. A `UNIQUE(meeting_id, email)` constraint prevents duplicate invites. Composite indexes cover the dashboard queries (`host_id, scheduled_start`) and live-roster lookups (`meeting_id, left_at`).
+- **Integrity in the database.** Foreign keys use `ON DELETE CASCADE` (SQLite's `PRAGMA foreign_keys` is turned on for every connection). `CHECK` constraints enforce a positive duration, require a start time on scheduled meetings, and require every recurring series to end (by count or date). `UNIQUE` constraints stop double votes and duplicate poll options. A `UNIQUE(meeting_id, email)` constraint prevents duplicate invites. Composite indexes cover the dashboard queries (`host_id, scheduled_start`) and live-roster lookups (`meeting_id, left_at`).
 - **Time.** All timestamps are stored in UTC through a custom `UTCDateTime` type, which gives back timezone-aware values and so serialises with `Z`. The organiser's IANA `timezone` is kept so an edit shows the original wall-clock time. The schedule form sends a local time plus a time zone, and the server converts it with `zoneinfo`.
+- **Recurring meetings are one row.** A series keeps one Meeting ID and link (as in Zoom). Its occurrences are computed from `recurrence`, `recurrence_interval` and `recurrence_count` / `recurrence_until` rather than stored as copies, so editing the series edits every future occurrence.
+- **Polls are normalised.** `polls → poll_options → poll_votes`, with one row per chosen option, so single and multiple choice use the same tables, and tallies are a `GROUP BY`.
 - **Enums** are stored as readable strings (`'live'`, `'scheduled'`) rather than integers.
 - **Everything that happens in a meeting hangs off the participant who did it.** Chat messages, transcript lines and activities all reference `meeting_participants`, so insights come from `GROUP BY participant_id` queries rather than stored totals. `meeting_activities` is an append-only event log (kind + detail + time). New kinds of engagement can be added without new tables, and the totals can always be recomputed. The one stored aggregate is `talk_time_ms`: speaking time arrives as a stream of small increments, and a row per 250 ms sample would be wasteful.
 
@@ -271,17 +357,20 @@ erDiagram
 
 | Method & path | Purpose |
 |---|---|
-| `GET /api/users/me` | The logged-in (default) user |
+| `POST /api/auth/signup` / `POST /api/auth/login` | Create an account / sign in. Returns a bearer token |
+| `GET /api/users/me` | The signed-in user, or the demo user without a token |
 | `GET /api/users` | Contacts, used for attendee suggestions |
 | `GET /api/meetings?scope=upcoming\|recent` | Dashboard lists |
-| `POST /api/meetings/instant` | Create an instant meeting |
+| `POST /api/meetings/instant` | Create an instant meeting (`use_pmi` starts the Personal Meeting Room) |
+| `GET /api/meetings/personal` | My Personal Meeting Room |
 | `POST /api/meetings` | Schedule a meeting |
 | `GET /api/meetings/{id}` | Meeting details (`start_token` only for the host) |
 | `PUT /api/meetings/{id}` / `DELETE /api/meetings/{id}` | Edit / delete (host only) |
 | `GET /api/meetings/{id}/lookup` | Public check that a meeting exists (join flow) |
 | `POST /api/meetings/{id}/join` | Checks the passcode / host start token / waiting-for-host rule, records the participant, returns a signed WebSocket token |
 | `GET /api/meetings/{id}/participants` / `messages` / `transcript` | Attendance, chat history, transcript |
-| `GET /api/meetings/{id}/insights` | Post-meeting insights (talk time, engagement, reactions) |
+| `GET /api/meetings/{id}/insights` | Post-meeting insights (talk time, engagement, reactions, polls, recordings) |
+| `GET /api/meetings/{id}/polls` / `breakouts` / `whiteboard` | Poll results, breakout rooms and who was in them, saved whiteboard |
 | `WS /ws/meetings/{id}?token=…` | Signalling and live meeting events |
 
 Errors use one shape, `{"detail": {"code": "WAITING_FOR_HOST", "message": "…"}}`, so the UI can branch on `code`.
@@ -302,7 +391,7 @@ Errors use one shape, `{"detail": {"code": "WAITING_FOR_HOST", "message": "…"}
 
 ## Assumptions and scope
 
-- **No login.** As the brief allows, every request acts as one seeded default user (`Bhavya Talwar`, set by `DEFAULT_USER_EMAIL`). The *host* inside a meeting is whoever opens it through the dashboard's **Start** button, which carries the meeting's `start_token` (like Zoom's start URL). Anyone opening the plain invite link joins as an attendee, so host and attendee can be tried from two browser windows.
+- **Login is optional.** As the brief allows, every request without a session acts as one seeded default user (`Bhavya Talwar`, set by `DEFAULT_USER_EMAIL`). Signing in (the bonus feature) switches to that account's meetings. The *host* inside a meeting is whoever opens it through the dashboard's **Start** button, which carries the meeting's `start_token` (like Zoom's start URL). Anyone opening the plain invite link joins as an attendee, so host and attendee can be tried from two browser windows.
 - **Passcodes.** Invite links include the passcode (as Zoom's do). Joining by ID alone asks for it.
 - **Media topology.** WebRTC **mesh**: every participant connects to every other one. This works well for small meetings (about 6 people). Larger meetings would need an SFU (e.g. LiveKit or mediasoup).
 - **NAT traversal.** Public Google STUN servers are used. Networks with strict NATs or firewalls need a TURN server, which can be set with `NEXT_PUBLIC_TURN_URL`, `NEXT_PUBLIC_TURN_USERNAME` and `NEXT_PUBLIC_TURN_CREDENTIAL`.

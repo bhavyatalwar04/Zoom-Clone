@@ -1,4 +1,6 @@
+import { dropExpiredSession, getToken } from "./auth";
 import type {
+  AuthResponse,
   BreakoutHistory,
   ChatMessage,
   JoinResponse,
@@ -29,10 +31,15 @@ export class ApiError extends Error {
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let res: Response;
+  const token = getToken();
   try {
     res = await fetch(`${API_URL}${path}`, {
       ...init,
-      headers: { "Content-Type": "application/json", ...init?.headers },
+      headers: {
+        "Content-Type": "application/json",
+        ...(token && { Authorization: `Bearer ${token}` }),
+        ...init?.headers,
+      },
     });
   } catch {
     throw new ApiError(0, "NETWORK", "Unable to reach the server. Please check your connection.");
@@ -43,6 +50,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (!res.ok) {
     const detail = body?.detail;
     if (detail && typeof detail === "object" && "code" in detail) {
+      if (detail.code === "SESSION_EXPIRED") dropExpiredSession();
       throw new ApiError(res.status, detail.code, detail.message);
     }
     // FastAPI validation errors: [{ loc, msg }, ...]
@@ -70,7 +78,13 @@ export const api = {
   polls: (code: string) => request<PollView[]>(`/api/meetings/${encodeURIComponent(code)}/polls`),
   insights: (code: string) => request<MeetingInsights>(`/api/meetings/${encodeURIComponent(code)}/insights`),
 
-  createInstant: (data: { title?: string; host_video_on?: boolean } = {}) =>
+  signup: (data: { full_name: string; email: string; password: string }) =>
+    request<AuthResponse>("/api/auth/signup", { method: "POST", body: json(data) }),
+  login: (data: { email: string; password: string }) =>
+    request<AuthResponse>("/api/auth/login", { method: "POST", body: json(data) }),
+  personalRoom: () => request<Meeting>("/api/meetings/personal"),
+
+  createInstant: (data: { title?: string; host_video_on?: boolean; use_pmi?: boolean } = {}) =>
     request<Meeting>("/api/meetings/instant", { method: "POST", body: json(data) }),
   schedule: (data: ScheduleMeetingInput) => request<Meeting>("/api/meetings", { method: "POST", body: json(data) }),
   update: (code: string, data: ScheduleMeetingInput) =>

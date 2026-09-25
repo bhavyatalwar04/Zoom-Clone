@@ -5,6 +5,8 @@ import { useSyncExternalStore } from "react";
 /** Per-browser client preferences (the Settings dialog), persisted in localStorage. */
 export interface ClientSettings {
   startWithVideo: boolean;
+  /** New meeting starts my Personal Meeting Room instead of a fresh Meeting ID. */
+  usePmi: boolean;
   muteOnJoin: boolean;
   confirmLeave: boolean;
   mirrorVideo: boolean;
@@ -16,6 +18,7 @@ export interface ClientSettings {
 const KEY = "zoom-clone:settings";
 const DEFAULTS: ClientSettings = {
   startWithVideo: true,
+  usePmi: false,
   muteOnJoin: false,
   confirmLeave: true,
   mirrorVideo: true,

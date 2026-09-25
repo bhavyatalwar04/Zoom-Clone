@@ -1,5 +1,5 @@
-import clsx from "clsx";
 import { forwardRef } from "react";
+import { cn } from "@/lib/cn";
 
 type Variant = "primary" | "secondary" | "danger" | "ghost";
 type Size = "sm" | "md" | "lg";
@@ -31,7 +31,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
     <button
       ref={ref}
       disabled={disabled || loading}
-      className={clsx(
+      className={cn(
         "inline-flex select-none items-center justify-center gap-1.5 rounded-lg font-bold transition-colors",
         "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zoom-blue disabled:cursor-not-allowed",
         VARIANTS[variant],

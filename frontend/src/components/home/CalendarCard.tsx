@@ -1,7 +1,7 @@
 "use client";
 
 import { format } from "date-fns";
-import { CalendarX2, RefreshCw } from "lucide-react";
+import { CalendarX2, RefreshCw, Repeat } from "lucide-react";
 import { useEffect, useState } from "react";
 import { MeetingActionsMenu } from "@/components/meetings/MeetingActionsMenu";
 import { MeetingJoinButton } from "@/components/meetings/MeetingJoinButton";
@@ -81,9 +81,12 @@ export function CalendarCard({ onSchedule, onEdit, onDelete }: CalendarCardProps
               <p className="px-3 pb-1 pt-3 text-xs font-bold uppercase tracking-wide text-muted">{day}</p>
               <ul>
                 {items.map((m) => (
-                  <li key={m.code} className="group flex items-start gap-3 rounded-xl px-3 py-2.5 hover:bg-surface">
+                  <li key={`${m.code}-${m.scheduled_start}`} className="group flex items-start gap-3 rounded-xl px-3 py-2.5 hover:bg-surface">
                     <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-bold text-ink">{m.title}</p>
+                      <p className="flex items-center gap-1.5 truncate text-sm font-bold text-ink">
+                        {m.title}
+                        {m.recurrence && <Repeat className="h-3.5 w-3.5 shrink-0 text-muted" aria-label="Recurring meeting" />}
+                      </p>
                       <p className="mt-0.5 flex items-center gap-2 text-xs text-muted">
                         {formatTimeRange(m.scheduled_start!, m.duration_minutes)}
                         {m.status === "live" && (

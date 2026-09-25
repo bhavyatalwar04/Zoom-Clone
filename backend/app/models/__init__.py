@@ -19,7 +19,7 @@ post-meeting insights aggregate over.
 from .base import db_enum
 from .collaboration import BreakoutAssignment, BreakoutRoom, WhiteboardStroke
 from .engagement import ActivityKind, ChatMessage, MeetingActivity, MeetingRecording, TranscriptSegment
-from .meeting import Meeting, MeetingInvitee, MeetingStatus, MeetingType
+from .meeting import Meeting, MeetingInvitee, MeetingStatus, MeetingType, RecurrenceType
 from .participant import MeetingParticipant, ParticipantRole
 from .polls import Poll, PollOption, PollStatus, PollVote
 from .user import User
@@ -42,6 +42,7 @@ __all__ = [
     "PollOption",
     "PollStatus",
     "PollVote",
+    "RecurrenceType",
     "TranscriptSegment",
     "User",
     "db_enum",

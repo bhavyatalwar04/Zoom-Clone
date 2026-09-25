@@ -6,6 +6,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState } from "react";
 import { ZoomLogo } from "@/components/ui/ZoomLogo";
+import { useSignedIn } from "@/hooks/useAuth";
 import { ProfileMenu } from "./ProfileMenu";
 import { SettingsModal } from "./SettingsModal";
 
@@ -19,6 +20,7 @@ const TABS = [
 export function TopNav() {
   const pathname = usePathname();
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const signedIn = useSignedIn();
 
   return (
     <header className="sticky top-0 z-30 border-b border-line bg-white">
@@ -57,6 +59,11 @@ export function TopNav() {
         </nav>
 
         <div className="flex shrink-0 items-center gap-1.5">
+          {!signedIn && (
+            <Link href="/signin" className="hidden rounded-lg px-3 py-1.5 text-sm font-bold text-zoom-blue hover:bg-zoom-blue-soft sm:block">
+              Sign in
+            </Link>
+          )}
           <button
             onClick={() => setSettingsOpen(true)}
             className="rounded-lg p-2 text-muted hover:bg-surface hover:text-ink"

@@ -12,7 +12,15 @@ import { Avatar } from "@/components/ui/Avatar";
 import { Button } from "@/components/ui/Button";
 import { useToast } from "@/components/ui/Toast";
 import { api } from "@/lib/api";
-import { formatDayLabel, formatDuration, formatMeetingId, formatTimeRange, minutesBetween, timeZoneLabel } from "@/lib/format";
+import {
+  describeRecurrence,
+  formatDayLabel,
+  formatDuration,
+  formatMeetingId,
+  formatTimeRange,
+  minutesBetween,
+  timeZoneLabel,
+} from "@/lib/format";
 import { buildInvitation } from "@/lib/invitation";
 import type { Meeting } from "@/lib/types";
 import { InsightsView } from "./InsightsView";
@@ -53,7 +61,9 @@ export function MeetingDetails({ meeting: m, onBack, onEdit, onDelete }: Meeting
           ? `${formatDayLabel(m.started_at)}, ${format(new Date(m.started_at), "h:mm a")}${m.ended_at ? ` - ${format(new Date(m.ended_at), "h:mm a")}` : ""}`
           : m.scheduled_start
             ? `${formatDayLabel(m.scheduled_start)}, ${formatTimeRange(m.scheduled_start, m.duration_minutes)}`
-            : "Instant meeting"}
+            : m.meeting_type === "personal"
+              ? "Personal Meeting Room · always available"
+              : "Instant meeting"}
       </p>
 
       <div className="mt-5 flex flex-wrap gap-2">
@@ -78,6 +88,16 @@ export function MeetingDetails({ meeting: m, onBack, onEdit, onDelete }: Meeting
         {m.passcode && <Row label="Passcode">{m.passcode}</Row>}
         <Row label="Host">{m.is_host ? `${m.host.full_name} (you)` : m.host.full_name}</Row>
         {!past && m.scheduled_start && <Row label="Time zone">{timeZoneLabel(m.timezone)}</Row>}
+        {m.recurrence && (
+          <Row label="Recurrence">
+            {describeRecurrence(m.recurrence, m.series_start ?? m.scheduled_start!)}
+            {!past && m.next_occurrences.length > 1 && (
+              <span className="mt-1 block text-xs text-muted">
+                Next: {m.next_occurrences.slice(0, 4).map((d) => format(new Date(d), "EEE, MMM d")).join(" · ")}
+              </span>
+            )}
+          </Row>
+        )}
         {past && m.started_at && m.ended_at && <Row label="Duration">{formatDuration(minutesBetween(m.started_at, m.ended_at))}</Row>}
         {m.description && <Row label="Description">{m.description}</Row>}
         <Row label="Invite link">

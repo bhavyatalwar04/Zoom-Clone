@@ -5,8 +5,10 @@ import { CalendarDays, ChevronDown, MonitorUp, Plus, Video } from "lucide-react"
 import { useRef, useState } from "react";
 import { Checkbox } from "@/components/ui/Checkbox";
 import { Popover } from "@/components/ui/Popover";
-import { useStartInstantMeeting } from "@/hooks/useStartMeeting";
+import { useMe } from "@/hooks/useMeetings";
 import { useSettings } from "@/hooks/useSettings";
+import { useStartInstantMeeting } from "@/hooks/useStartMeeting";
+import { formatMeetingId } from "@/lib/format";
 
 interface ActionTilesProps {
   onJoin: () => void;
@@ -54,6 +56,7 @@ function Tile({
 export function ActionTiles({ onJoin, onSchedule, onShare }: ActionTilesProps) {
   const { start, starting } = useStartInstantMeeting();
   const [settings, update] = useSettings();
+  const { data: me } = useMe();
   const [menuOpen, setMenuOpen] = useState(false);
   const caret = useRef<HTMLButtonElement>(null);
 
@@ -64,8 +67,16 @@ export function ActionTiles({ onJoin, onSchedule, onShare }: ActionTilesProps) {
           <button ref={caret} onClick={() => setMenuOpen((v) => !v)} className="rounded p-0.5 hover:bg-surface" aria-label="New meeting options">
             <ChevronDown className="h-3.5 w-3.5" />
           </button>
-          <Popover open={menuOpen} onClose={() => setMenuOpen(false)} anchorRef={caret} className="left-1/2 top-6 w-56 -translate-x-1/2 bg-white p-3">
-            <Checkbox checked={settings.startWithVideo} onChange={(v) => update({ startWithVideo: v })} label="Start with video" />
+          <Popover open={menuOpen} onClose={() => setMenuOpen(false)} anchorRef={caret} className="left-1/2 top-6 w-64 -translate-x-1/2 bg-white p-3">
+            <div className="space-y-3">
+              <Checkbox checked={settings.startWithVideo} onChange={(v) => update({ startWithVideo: v })} label="Start with video" />
+              <Checkbox
+                checked={settings.usePmi}
+                onChange={(v) => update({ usePmi: v })}
+                label="Use my Personal Meeting ID (PMI)"
+                description={me?.personal_meeting_id ? formatMeetingId(me.personal_meeting_id) : undefined}
+              />
+            </div>
           </Popover>
         </div>
       </Tile>

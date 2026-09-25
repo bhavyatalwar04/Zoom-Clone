@@ -37,8 +37,15 @@ def list_meetings(
     scope: Literal["upcoming", "recent"] = "upcoming",
     limit: int = Query(default=50, ge=1, le=200),
 ):
-    meetings = service.list_upcoming(db, user, limit) if scope == "upcoming" else service.list_recent(db, user, limit)
-    return [service.to_meeting_out(m, user) for m in meetings]
+    if scope == "upcoming":
+        return [service.to_meeting_out(m, user, start) for m, start in service.list_upcoming(db, user, limit)]
+    return [service.to_meeting_out(m, user) for m in service.list_recent(db, user, limit)]
+
+
+@router.get("/personal", response_model=MeetingOut)
+def personal_room(db: DbSession, user: CurrentUser):
+    """The current user's Personal Meeting Room (created on first use)."""
+    return service.to_meeting_out(service.get_or_create_personal_room(db, user), user)
 
 
 @router.post("/instant", response_model=MeetingOut, status_code=status.HTTP_201_CREATED)

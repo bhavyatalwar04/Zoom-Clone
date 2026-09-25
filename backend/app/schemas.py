@@ -1,12 +1,12 @@
 """Pydantic request / response models (the API contract)."""
 
 import re
-from datetime import datetime
+from datetime import date, datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from .models import MeetingStatus, MeetingType, ParticipantRole, PollStatus
+from .models import MeetingStatus, MeetingType, ParticipantRole, PollStatus, RecurrenceType
 
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _PASSCODE_RE = re.compile(r"^[A-Za-z0-9@_*-]{1,10}$")
@@ -32,6 +32,42 @@ class UserOut(BaseModel):
     avatar_color: str
     job_title: str | None
     timezone: str
+    personal_meeting_id: str | None = None
+
+
+# --------------------------------------------------------------------------- auth
+
+
+class SignupRequest(BaseModel):
+    full_name: str = Field(min_length=1, max_length=120)
+    email: str = Field(max_length=255)
+    password: str = Field(min_length=8, max_length=128)
+
+    @field_validator("full_name")
+    @classmethod
+    def _clean_name(cls, value: str) -> str:
+        value = " ".join(value.split())
+        if not value:
+            raise ValueError("Please enter your name")
+        return value
+
+    @field_validator("email")
+    @classmethod
+    def _check_email(cls, value: str) -> str:
+        value = value.strip().lower()
+        if not _EMAIL_RE.match(value):
+            raise ValueError("Please enter a valid email address")
+        return value
+
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+class AuthResponse(BaseModel):
+    token: str
+    user: UserOut
 
 
 # --------------------------------------------------------------------------- meetings
@@ -48,6 +84,15 @@ class MeetingOptions(BaseModel):
 class InstantMeetingCreate(BaseModel):
     title: str | None = Field(default=None, max_length=200)
     host_video_on: bool = True
+    # Start the host's Personal Meeting Room instead of a new meeting.
+    use_pmi: bool = False
+
+
+class RecurrenceOut(BaseModel):
+    type: RecurrenceType
+    interval: int
+    count: int | None
+    until: datetime | None
 
 
 class ScheduledMeetingCreate(MeetingOptions):
@@ -60,6 +105,22 @@ class ScheduledMeetingCreate(MeetingOptions):
     require_passcode: bool = True
     passcode: str | None = None
     invitees: list[str] = Field(default_factory=list, max_length=100)
+    # Recurring meeting: repeat every `recurrence_interval` days / weeks / months, ending after
+    # `recurrence_count` occurrences or on `recurrence_end_date`.
+    recurrence: RecurrenceType | None = None
+    recurrence_interval: int = Field(default=1, ge=1, le=30)
+    recurrence_count: int | None = Field(default=None, ge=2, le=50)
+    recurrence_end_date: date | None = None
+
+    @model_validator(mode="after")
+    def _check_recurrence(self):
+        if self.recurrence is None:
+            self.recurrence_count = self.recurrence_end_date = None
+        elif (self.recurrence_count is None) == (self.recurrence_end_date is None):
+            raise ValueError("Choose when the recurring meeting ends: after a number of occurrences or on a date")
+        elif self.recurrence_end_date is not None and self.recurrence_end_date < self.start_time.date():
+            raise ValueError("The recurrence end date must be after the first meeting")
+        return self
 
     @field_validator("title")
     @classmethod
@@ -122,6 +183,10 @@ class MeetingOut(MeetingOptions):
     created_at: datetime
     started_at: datetime | None
     ended_at: datetime | None
+    # For recurring meetings: `scheduled_start` is the occurrence shown, `series_start` the first one.
+    series_start: datetime | None = None
+    recurrence: RecurrenceOut | None = None
+    next_occurrences: list[datetime] = Field(default_factory=list)
 
 
 class MeetingLookup(BaseModel):

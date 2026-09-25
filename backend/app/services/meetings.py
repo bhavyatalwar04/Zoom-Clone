@@ -6,7 +6,7 @@ Routers stay thin and call into this module; the realtime (WebSocket) layer uses
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import exists, or_, select, update
+from sqlalchemy import and_, exists, or_, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from ..config import get_settings
@@ -34,14 +34,18 @@ from ..schemas import (
     JoinRequest,
     MeetingLookup,
     MeetingOut,
+    RecurrenceOut,
     ScheduledMeetingCreate,
     TranscriptSegmentOut,
     UserOut,
 )
-from ..security import generate_meeting_code, generate_passcode, generate_start_token
+from ..security import generate_meeting_code, generate_passcode, generate_personal_meeting_id, generate_start_token
+from .recurrence import end_of_day, occurrences
 
 # Scheduled meetings may be created slightly in the past (e.g. "now" rounded down).
 _PAST_START_GRACE = timedelta(minutes=5)
+# How many upcoming occurrences of one recurring series the dashboard lists.
+_OCCURRENCES_PER_SERIES = 5
 
 _MEETING_LOAD_OPTIONS = (
     selectinload(Meeting.host),
@@ -90,15 +94,32 @@ def _set_invitees(db: Session, meeting: Meeting, emails: list[str]) -> None:
     ]
 
 
-def to_meeting_out(meeting: Meeting, current_user: User) -> MeetingOut:
+def to_meeting_out(meeting: Meeting, current_user: User, occurrence_start: datetime | None = None) -> MeetingOut:
+    """`occurrence_start` picks which occurrence of a recurring meeting this item represents;
+    without it a recurring meeting shows its next occurrence."""
     is_host = meeting.host_id == current_user.id
+    upcoming = occurrences(meeting, after=utcnow(), limit=_OCCURRENCES_PER_SERIES) if meeting.recurrence else []
+    shown_start = occurrence_start or (upcoming[0] if upcoming else meeting.scheduled_start)
+    status = meeting.status
+    if meeting.recurrence and status == MeetingStatus.LIVE and upcoming and shown_start != upcoming[0]:
+        status = MeetingStatus.SCHEDULED  # only the current occurrence of a series is "in progress"
     return MeetingOut(
         code=meeting.meeting_code,
         title=meeting.title,
         description=meeting.description,
         meeting_type=meeting.meeting_type,
-        status=meeting.status,
-        scheduled_start=meeting.scheduled_start,
+        status=status,
+        scheduled_start=shown_start,
+        series_start=meeting.scheduled_start,
+        recurrence=RecurrenceOut(
+            type=meeting.recurrence,
+            interval=meeting.recurrence_interval,
+            count=meeting.recurrence_count,
+            until=meeting.recurrence_until,
+        )
+        if meeting.recurrence
+        else None,
+        next_occurrences=upcoming,
         duration_minutes=meeting.duration_minutes,
         timezone=meeting.timezone,
         passcode=meeting.passcode,
@@ -203,23 +224,37 @@ def get_accessible_meeting(db: Session, code: str, user: User) -> Meeting:
     return meeting
 
 
-def list_upcoming(db: Session, user: User, limit: int = 50) -> list[Meeting]:
-    """Scheduled meetings that have not finished yet, soonest first."""
+def list_upcoming(db: Session, user: User, limit: int = 50) -> list[tuple[Meeting, datetime]]:
+    """Scheduled meetings (and upcoming occurrences of recurring ones) that have not finished yet,
+    soonest first, as (meeting, occurrence start) pairs."""
     now = utcnow()
     candidates = db.scalars(
         select(Meeting)
         .where(
             _involving(user),
             Meeting.meeting_type == MeetingType.SCHEDULED,
-            Meeting.status != MeetingStatus.ENDED,
-            # Longest allowed duration is 24h, so anything that started earlier is certainly over.
-            Meeting.scheduled_start >= now - timedelta(hours=24),
+            or_(
+                and_(
+                    Meeting.recurrence.is_(None),
+                    Meeting.status != MeetingStatus.ENDED,
+                    # Longest allowed duration is 24h, so anything that started earlier is certainly over.
+                    Meeting.scheduled_start >= now - timedelta(hours=24),
+                ),
+                # A recurring series stays relevant after an occurrence ends; its dates are computed.
+                Meeting.recurrence.is_not(None),
+            ),
         )
-        .order_by(Meeting.scheduled_start)
         .options(*_MEETING_LOAD_OPTIONS)
     ).all()
-    upcoming = [m for m in candidates if m.status == MeetingStatus.LIVE or (_meeting_end(m) or now) > now]
-    return upcoming[:limit]
+    items: list[tuple[Meeting, datetime]] = []
+    for meeting in candidates:
+        if meeting.recurrence is None:
+            if meeting.status == MeetingStatus.LIVE or (_meeting_end(meeting) or now) > now:
+                items.append((meeting, meeting.scheduled_start))
+        else:
+            items.extend((meeting, start) for start in occurrences(meeting, after=now, limit=_OCCURRENCES_PER_SERIES))
+    items.sort(key=lambda item: item[1])
+    return items[:limit]
 
 
 def list_recent(db: Session, user: User, limit: int = 50) -> list[Meeting]:
@@ -238,7 +273,39 @@ def list_recent(db: Session, user: User, limit: int = 50) -> list[Meeting]:
 # --------------------------------------------------------------------------- commands
 
 
+def get_or_create_personal_room(db: Session, user: User) -> Meeting:
+    """The user's permanent Personal Meeting Room: its Meeting ID is their 10 digit PMI."""
+    if user.personal_meeting_id is None:
+        while True:
+            pmi = generate_personal_meeting_id()
+            taken = db.scalar(select(exists().where(User.personal_meeting_id == pmi))) or db.scalar(
+                select(exists().where(Meeting.meeting_code == pmi))
+            )
+            if not taken:
+                break
+        user.personal_meeting_id = pmi
+    meeting = db.scalar(select(Meeting).where(Meeting.meeting_code == user.personal_meeting_id))
+    if meeting is None:
+        meeting = Meeting(
+            meeting_code=user.personal_meeting_id,
+            title=f"{user.full_name}'s Personal Meeting Room",
+            host=user,
+            meeting_type=MeetingType.PERSONAL,
+            status=MeetingStatus.SCHEDULED,
+            duration_minutes=60,
+            timezone=user.timezone,
+            passcode=generate_passcode(),
+            start_token=generate_start_token(),
+            waiting_room=True,  # Zoom protects personal rooms with a waiting room by default
+        )
+        db.add(meeting)
+    db.commit()
+    return get_meeting(db, user.personal_meeting_id)
+
+
 def create_instant_meeting(db: Session, host: User, data: InstantMeetingCreate) -> Meeting:
+    if data.use_pmi:
+        return get_or_create_personal_room(db, host)
     meeting = Meeting(
         meeting_code=_unique_meeting_code(db),
         title=(data.title or "").strip() or f"{host.full_name}'s Zoom Meeting",
@@ -276,6 +343,10 @@ def _apply_schedule(db: Session, meeting: Meeting, data: ScheduledMeetingCreate)
     meeting.host_video_on = data.host_video_on
     meeting.participant_video_on = data.participant_video_on
     meeting.waiting_room = data.waiting_room
+    meeting.recurrence = data.recurrence
+    meeting.recurrence_interval = data.recurrence_interval
+    meeting.recurrence_count = data.recurrence_count
+    meeting.recurrence_until = end_of_day(data.recurrence_end_date, data.timezone) if data.recurrence_end_date else None
     _set_invitees(db, meeting, data.invitees)
 
 
@@ -302,6 +373,8 @@ def update_scheduled_meeting(db: Session, meeting: Meeting, data: ScheduledMeeti
 
 
 def delete_meeting(db: Session, meeting: Meeting) -> None:
+    if meeting.meeting_type == MeetingType.PERSONAL:
+        raise AppError(400, "PERSONAL_ROOM", "Your Personal Meeting Room can't be deleted.")
     if meeting.status == MeetingStatus.LIVE:
         raise AppError(409, "MEETING_LIVE", "End the meeting before deleting it.")
     db.delete(meeting)

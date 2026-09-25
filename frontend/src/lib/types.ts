@@ -1,4 +1,12 @@
-export type MeetingType = "instant" | "scheduled";
+export type MeetingType = "instant" | "scheduled" | "personal";
+export type RecurrenceType = "daily" | "weekly" | "monthly";
+
+export interface Recurrence {
+  type: RecurrenceType;
+  interval: number;
+  count: number | null;
+  until: string | null;
+}
 export type MeetingStatus = "scheduled" | "live" | "ended";
 export type ParticipantRole = "host" | "co_host" | "attendee";
 
@@ -9,6 +17,12 @@ export interface User {
   avatar_color: string;
   job_title: string | null;
   timezone: string;
+  personal_meeting_id: string | null;
+}
+
+export interface AuthResponse {
+  token: string;
+  user: User;
 }
 
 export interface MeetingOptions {
@@ -38,6 +52,10 @@ export interface Meeting extends MeetingOptions {
   created_at: string;
   started_at: string | null;
   ended_at: string | null;
+  /** For recurring meetings: scheduled_start is this occurrence, series_start the first one. */
+  series_start: string | null;
+  recurrence: Recurrence | null;
+  next_occurrences: string[];
 }
 
 export interface MeetingLookup {
@@ -63,6 +81,11 @@ export interface ScheduleMeetingInput extends MeetingOptions {
   require_passcode: boolean;
   passcode: string | null;
   invitees: string[];
+  recurrence: RecurrenceType | null;
+  recurrence_interval: number;
+  recurrence_count: number | null;
+  /** yyyy-MM-dd */
+  recurrence_end_date: string | null;
 }
 
 export interface Participant {

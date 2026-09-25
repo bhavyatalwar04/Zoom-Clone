@@ -19,6 +19,13 @@ if TYPE_CHECKING:
 class MeetingType(str, enum.Enum):
     INSTANT = "instant"
     SCHEDULED = "scheduled"
+    PERSONAL = "personal"  # the host's permanent Personal Meeting Room (code = their PMI)
+
+
+class RecurrenceType(str, enum.Enum):
+    DAILY = "daily"
+    WEEKLY = "weekly"
+    MONTHLY = "monthly"
 
 
 class MeetingStatus(str, enum.Enum):
@@ -34,14 +41,20 @@ class Meeting(Base):
     __table_args__ = (
         CheckConstraint("duration_minutes > 0", name="ck_meetings_duration_positive"),
         CheckConstraint(
-            "meeting_type = 'instant' OR scheduled_start IS NOT NULL",
+            "meeting_type IN ('instant', 'personal') OR scheduled_start IS NOT NULL",
             name="ck_meetings_scheduled_has_start",
         ),
+        # A recurring series must end: after N occurrences or by a date.
+        CheckConstraint(
+            "recurrence IS NULL OR recurrence_count IS NOT NULL OR recurrence_until IS NOT NULL",
+            name="ck_meetings_recurrence_bounded",
+        ),
+        CheckConstraint("recurrence_interval >= 1", name="ck_meetings_recurrence_interval"),
         Index("ix_meetings_host_start", "host_id", "scheduled_start"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    # The public, shareable 11 digit Meeting ID (e.g. 84523910472). Used in all URLs.
+    # The public, shareable Meeting ID: 11 digits (e.g. 84523910472), or the host's 10 digit PMI.
     meeting_code: Mapped[str] = mapped_column(String(11), unique=True, index=True)
     title: Mapped[str] = mapped_column(String(200))
     description: Mapped[str | None] = mapped_column(Text)
@@ -54,6 +67,13 @@ class Meeting(Base):
     scheduled_start: Mapped[datetime | None] = mapped_column(UTCDateTime)
     duration_minutes: Mapped[int] = mapped_column(Integer, default=60)
     timezone: Mapped[str] = mapped_column(String(64), default="UTC")
+
+    # Recurring meetings keep one Meeting ID for every occurrence; occurrences are computed from
+    # these fields (services/recurrence.py) rather than stored.
+    recurrence: Mapped[RecurrenceType | None] = mapped_column(db_enum(RecurrenceType, "recurrence_type"))
+    recurrence_interval: Mapped[int] = mapped_column(Integer, default=1)
+    recurrence_count: Mapped[int | None] = mapped_column(Integer)
+    recurrence_until: Mapped[datetime | None] = mapped_column(UTCDateTime)
 
     # Security / meeting options
     passcode: Mapped[str | None] = mapped_column(String(10))

@@ -8,7 +8,7 @@ from . import models, realtime  # noqa: F401  (models registers the tables on Ba
 from .config import get_settings
 from .database import Base, engine
 from .errors import AppError, app_error_handler
-from .routers import meetings, users
+from .routers import auth, meetings, users
 from .seed import seed_if_empty
 
 settings = get_settings()
@@ -37,6 +37,7 @@ app.add_middleware(
 )
 app.add_exception_handler(AppError, app_error_handler)
 
+app.include_router(auth.router)
 app.include_router(users.router)
 app.include_router(meetings.router)
 app.include_router(realtime.router)

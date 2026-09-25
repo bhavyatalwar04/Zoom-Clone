@@ -1,6 +1,6 @@
 "use client";
 
-import { addMinutes, format, setMinutes, startOfHour } from "date-fns";
+import { addDays, addMinutes, format, setMinutes, startOfHour } from "date-fns";
 import { CalendarCheck2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/Button";
@@ -10,9 +10,9 @@ import { Modal } from "@/components/ui/Modal";
 import { useToast } from "@/components/ui/Toast";
 import { useMe, useRefreshMeetings } from "@/hooks/useMeetings";
 import { api } from "@/lib/api";
-import { formatDayLabel, formatMeetingId, formatTimeRange, timeZoneLabel, toZonedParts } from "@/lib/format";
+import { describeRecurrence, formatDayLabel, formatMeetingId, formatTimeRange, timeZoneLabel, toZonedParts } from "@/lib/format";
 import { buildInvitation, copyToClipboard } from "@/lib/invitation";
-import type { Meeting, ScheduleMeetingInput } from "@/lib/types";
+import type { Meeting, RecurrenceType, ScheduleMeetingInput } from "@/lib/types";
 import { InviteeInput } from "./InviteeInput";
 
 interface ScheduleMeetingModalProps {
@@ -39,7 +39,16 @@ interface FormState {
   joinBeforeHost: boolean;
   muteOnEntry: boolean;
   waitingRoom: boolean;
+  recurring: boolean;
+  recurrence: RecurrenceType;
+  interval: number;
+  endMode: "count" | "date";
+  count: number;
+  endDate: string; // yyyy-MM-dd
 }
+
+const MAX_INTERVAL: Record<RecurrenceType, number> = { daily: 15, weekly: 12, monthly: 3 };
+const UNIT: Record<RecurrenceType, string> = { daily: "day", weekly: "week", monthly: "month" };
 
 const browserTimeZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone;
 
@@ -71,11 +80,20 @@ function emptyForm(hostName: string | undefined): FormState {
     joinBeforeHost: false,
     muteOnEntry: false,
     waitingRoom: false,
+    recurring: false,
+    recurrence: "weekly",
+    interval: 1,
+    endMode: "count",
+    count: 7,
+    endDate: format(addDays(start, 30), "yyyy-MM-dd"),
   };
 }
 
 function formFromMeeting(m: Meeting): FormState {
-  const { date, time } = toZonedParts(m.scheduled_start!, m.timezone);
+  // Recurring meetings are edited as a series, from their first occurrence.
+  const first = m.series_start ?? m.scheduled_start!;
+  const { date, time } = toZonedParts(first, m.timezone);
+  const r = m.recurrence;
   return {
     title: m.title,
     description: m.description ?? "",
@@ -92,6 +110,12 @@ function formFromMeeting(m: Meeting): FormState {
     joinBeforeHost: m.join_before_host,
     muteOnEntry: m.mute_on_entry,
     waitingRoom: m.waiting_room,
+    recurring: !!r,
+    recurrence: r?.type ?? "weekly",
+    interval: r?.interval ?? 1,
+    endMode: r?.until ? "date" : "count",
+    count: r?.count ?? 7,
+    endDate: r?.until ? toZonedParts(r.until, m.timezone).date : format(addDays(new Date(first), 30), "yyyy-MM-dd"),
   };
 }
 
@@ -110,6 +134,10 @@ function toPayload(f: FormState): ScheduleMeetingInput {
     join_before_host: f.joinBeforeHost,
     mute_on_entry: f.muteOnEntry,
     waiting_room: f.waitingRoom,
+    recurrence: f.recurring ? f.recurrence : null,
+    recurrence_interval: f.recurring ? f.interval : 1,
+    recurrence_count: f.recurring && f.endMode === "count" ? f.count : null,
+    recurrence_end_date: f.recurring && f.endMode === "date" ? f.endDate : null,
   };
 }
 
@@ -120,6 +148,8 @@ function validate(f: FormState): Record<string, string> {
   if (f.hours * 60 + f.minutes < 15) errors.duration = "Meetings must be at least 15 minutes long.";
   if (f.requirePasscode && f.passcode && !/^[A-Za-z0-9@_*-]{1,10}$/.test(f.passcode))
     errors.passcode = "Up to 10 characters: letters, numbers and @ - _ *";
+  if (f.recurring && f.endMode === "date" && (!f.endDate || f.endDate < f.date))
+    errors.recurrence = "The end date must be on or after the first meeting.";
   return errors;
 }
 
@@ -327,6 +357,89 @@ export function ScheduleMeetingModal({ open, onClose, meeting, onSaved }: Schedu
           </div>
         </div>
 
+        <div className="space-y-3">
+          <Checkbox checked={form.recurring} onChange={(v) => set("recurring", v)} label="Recurring meeting" />
+          {form.recurring && (
+            <div className="grid gap-3 rounded-lg bg-surface p-3 sm:grid-cols-2">
+              <div>
+                <FieldLabel htmlFor="recurrence">Recurrence</FieldLabel>
+                <Select
+                  id="recurrence"
+                  value={form.recurrence}
+                  onChange={(e) => {
+                    const next = e.target.value as RecurrenceType;
+                    setForm((f) => ({ ...f, recurrence: next, interval: Math.min(f.interval, MAX_INTERVAL[next]) }));
+                  }}
+                >
+                  <option value="daily">Daily</option>
+                  <option value="weekly">Weekly</option>
+                  <option value="monthly">Monthly</option>
+                </Select>
+              </div>
+              <div>
+                <FieldLabel htmlFor="interval">Repeat every</FieldLabel>
+                <div className="flex items-center gap-2">
+                  <Select id="interval" value={form.interval} onChange={(e) => set("interval", Number(e.target.value))} className="w-20">
+                    {Array.from({ length: MAX_INTERVAL[form.recurrence] }, (_, i) => (
+                      <option key={i + 1} value={i + 1}>
+                        {i + 1}
+                      </option>
+                    ))}
+                  </Select>
+                  <span className="text-sm text-muted">
+                    {UNIT[form.recurrence]}
+                    {form.interval > 1 ? "s" : ""}
+                  </span>
+                </div>
+              </div>
+              <fieldset className="space-y-2 sm:col-span-2">
+                <legend className="mb-1.5 text-[13px] font-bold text-ink-2">End</legend>
+                <label className="flex flex-wrap items-center gap-2 text-sm">
+                  <input type="radio" className="accent-zoom-blue" checked={form.endMode === "count"} onChange={() => set("endMode", "count")} />
+                  After
+                  <Select
+                    value={form.count}
+                    onChange={(e) => setForm((f) => ({ ...f, count: Number(e.target.value), endMode: "count" }))}
+                    aria-label="Number of occurrences"
+                    className="h-8 w-20"
+                  >
+                    {Array.from({ length: 49 }, (_, i) => (
+                      <option key={i + 2} value={i + 2}>
+                        {i + 2}
+                      </option>
+                    ))}
+                  </Select>
+                  occurrences
+                </label>
+                <label className="flex flex-wrap items-center gap-2 text-sm">
+                  <input type="radio" className="accent-zoom-blue" checked={form.endMode === "date"} onChange={() => set("endMode", "date")} />
+                  By
+                  <Input
+                    type="date"
+                    value={form.endDate}
+                    min={form.date}
+                    onChange={(e) => setForm((f) => ({ ...f, endDate: e.target.value, endMode: "date" }))}
+                    aria-label="Recurrence end date"
+                    className="h-8 w-44"
+                  />
+                </label>
+                <FieldError>{errors.recurrence}</FieldError>
+              </fieldset>
+              <p className="text-xs text-muted sm:col-span-2">
+                {describeRecurrence(
+                  {
+                    type: form.recurrence,
+                    interval: form.interval,
+                    count: form.endMode === "count" ? form.count : null,
+                    until: form.endMode === "date" && form.endDate ? `${form.endDate}T12:00:00` : null,
+                  },
+                  `${form.date}T${form.time}:00`,
+                )}
+              </p>
+            </div>
+          )}
+        </div>
+
         <div>
           <FieldLabel>Attendees</FieldLabel>
           <InviteeInput value={form.invitees} onChange={(v) => set("invitees", v)} />
@@ -344,17 +457,15 @@ export function ScheduleMeetingModal({ open, onClose, meeting, onSaved }: Schedu
           <div className="flex flex-wrap items-center gap-3">
             <Checkbox checked={form.requirePasscode} onChange={(v) => set("requirePasscode", v)} label="Passcode" />
             {form.requirePasscode && (
-              <div className="w-40">
-                <Input
-                  value={form.passcode}
-                  onChange={(e) => set("passcode", e.target.value)}
-                  placeholder="Auto-generate"
-                  maxLength={10}
-                  className="h-8"
-                  invalid={!!errors.passcode}
-                  aria-label="Passcode"
-                />
-              </div>
+              <Input
+                value={form.passcode}
+                onChange={(e) => set("passcode", e.target.value)}
+                placeholder="Auto-generate"
+                maxLength={10}
+                className="h-8 w-40"
+                invalid={!!errors.passcode}
+                aria-label="Passcode"
+              />
             )}
           </div>
           <FieldError>{errors.passcode}</FieldError>

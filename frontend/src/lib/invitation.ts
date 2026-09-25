@@ -1,5 +1,6 @@
 import { format } from "date-fns";
-import { formatMeetingId } from "./format";
+import { describeRecurrence, formatMeetingId } from "./format";
+import type { Recurrence } from "./types";
 
 interface InvitationSource {
   title: string;
@@ -8,6 +9,8 @@ interface InvitationSource {
   join_url: string;
   scheduled_start?: string | null;
   hostName: string;
+  recurrence?: Recurrence | null;
+  series_start?: string | null;
 }
 
 /** Plain-text invitation in the same shape as Zoom's "Copy Invitation". */
@@ -20,6 +23,7 @@ export function buildInvitation(m: InvitationSource): string {
   if (m.scheduled_start) {
     const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
     lines.push(`Time: ${format(new Date(m.scheduled_start), "MMM d, yyyy hh:mm a")} ${tz}`);
+    if (m.recurrence) lines.push(`        ${describeRecurrence(m.recurrence, m.series_start ?? m.scheduled_start)}`);
   }
   lines.push("", "Join Zoom Meeting", m.join_url, "", `Meeting ID: ${formatMeetingId(m.code)}`);
   if (m.passcode) lines.push(`Passcode: ${m.passcode}`);

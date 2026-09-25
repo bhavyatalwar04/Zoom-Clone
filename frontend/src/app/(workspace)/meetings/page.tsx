@@ -2,18 +2,21 @@
 
 import clsx from "clsx";
 import { format } from "date-fns";
-import { CalendarClock, Plus, RefreshCw } from "lucide-react";
+import { CalendarClock, Plus, RefreshCw, Repeat } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useState } from "react";
+import useSWR from "swr";
 import { ListSkeleton } from "@/components/home/CalendarCard";
 import { useDeleteMeeting } from "@/components/meetings/MeetingActionsMenu";
 import { MeetingDetails } from "@/components/meetings/MeetingDetails";
 import { ScheduleMeetingModal } from "@/components/meetings/ScheduleMeetingModal";
 import { useRecentMeetings, useUpcomingMeetings } from "@/hooks/useMeetings";
 import { formatDayLabel, formatMeetingId } from "@/lib/format";
+import { api } from "@/lib/api";
 import type { Meeting } from "@/lib/types";
 
-type Tab = "upcoming" | "previous";
+type Tab = "upcoming" | "previous" | "personal";
+const TAB_LABELS: Record<Tab, string> = { upcoming: "Upcoming", previous: "Previous", personal: "Personal Room" };
 
 function meetingDate(m: Meeting) {
   return m.status === "ended" ? m.started_at! : (m.scheduled_start ?? m.created_at);
@@ -22,31 +25,41 @@ function meetingDate(m: Meeting) {
 function MeetingsView() {
   const router = useRouter();
   const params = useSearchParams();
-  const tab: Tab = params.get("tab") === "previous" ? "previous" : "upcoming";
+  const tabParam = params.get("tab");
+  const tab: Tab = tabParam === "previous" || tabParam === "personal" ? tabParam : "upcoming";
   const selectedCode = params.get("code");
+  // Occurrences of a recurring meeting share a code, so the occurrence start picks one.
+  const selectedAt = params.get("at");
 
-  const upcoming = useUpcomingMeetings();
-  const recent = useRecentMeetings();
-  const { data, isLoading, mutate, isValidating } = tab === "upcoming" ? upcoming : recent;
+  const lists = { upcoming: useUpcomingMeetings(), previous: useRecentMeetings() };
+  const personal = useSWR(tab === "personal" ? "meetings:personal" : null, api.personalRoom);
+  const source = tab === "personal" ? personal : lists[tab];
+  const data = tab === "personal" ? (personal.data ? [personal.data] : undefined) : lists[tab].data;
+  const { isLoading, isValidating } = source;
+  const refresh = () => void source.mutate();
 
   const [scheduleOpen, setScheduleOpen] = useState(false);
   const [editing, setEditing] = useState<Meeting | null>(null);
 
-  const go = (next: { tab?: Tab; code?: string | null }) => {
+  const go = (next: { tab?: Tab; code?: string | null; at?: string | null }) => {
     const q = new URLSearchParams();
     q.set("tab", next.tab ?? tab);
     const code = next.code === undefined ? selectedCode : next.code;
     if (code) q.set("code", code);
+    if (code && next.at) q.set("at", next.at);
     router.replace(`/meetings?${q}`, { scroll: false });
   };
 
   const { requestDelete, dialog: deleteDialog } = useDeleteMeeting(() => go({ code: null }));
   // On desktop the first meeting is shown by default; on mobile the list is shown until one is picked.
-  const selected = data?.find((m) => m.code === selectedCode) ?? (selectedCode ? null : data?.[0]) ?? null;
+  const selected =
+    data?.find((m) => m.code === selectedCode && (!selectedAt || m.scheduled_start === selectedAt)) ??
+    (selectedCode ? null : data?.[0]) ??
+    null;
 
   const groups = new Map<string, Meeting[]>();
   data?.forEach((m) => {
-    const label = formatDayLabel(meetingDate(m));
+    const label = tab === "personal" ? "Personal Meeting ID" : formatDayLabel(meetingDate(m));
     groups.set(label, [...(groups.get(label) ?? []), m]);
   });
 
@@ -61,7 +74,7 @@ function MeetingsView() {
         <div className="flex items-center justify-between px-4 pb-2 pt-4">
           <h1 className="text-lg font-bold">Meetings</h1>
           <div className="flex gap-1">
-            <button onClick={() => mutate()} className="rounded-md p-1.5 text-muted hover:bg-surface hover:text-ink" aria-label="Refresh">
+            <button onClick={refresh} className="rounded-md p-1.5 text-muted hover:bg-surface hover:text-ink" aria-label="Refresh">
               <RefreshCw className={clsx("h-4 w-4", isValidating && "animate-spin")} />
             </button>
             <button
@@ -74,18 +87,18 @@ function MeetingsView() {
           </div>
         </div>
         <div className="flex gap-5 border-b border-line px-4" role="tablist">
-          {(["upcoming", "previous"] as const).map((t) => (
+          {(["upcoming", "previous", "personal"] as const).map((t) => (
             <button
               key={t}
               role="tab"
               aria-selected={tab === t}
               onClick={() => go({ tab: t, code: null })}
               className={clsx(
-                "-mb-px border-b-2 pb-2 pt-1 text-sm font-bold capitalize",
+                "-mb-px whitespace-nowrap border-b-2 pb-2 pt-1 text-sm font-bold",
                 tab === t ? "border-zoom-blue text-zoom-blue" : "border-transparent text-muted hover:text-ink",
               )}
             >
-              {t}
+              {TAB_LABELS[t]}
             </button>
           ))}
         </div>
@@ -101,15 +114,16 @@ function MeetingsView() {
               <p className="px-3 pb-1 pt-3 text-xs font-bold uppercase tracking-wide text-muted">{day}</p>
               {items.map((m) => (
                 <button
-                  key={m.code}
-                  onClick={() => go({ code: m.code })}
+                  key={`${m.code}-${m.scheduled_start}`}
+                  onClick={() => go({ code: m.code, at: m.scheduled_start })}
                   className={clsx(
                     "flex w-full flex-col rounded-xl px-3 py-2.5 text-left",
-                    selected?.code === m.code ? "bg-zoom-blue-soft" : "hover:bg-surface",
+                    selected === m ? "bg-zoom-blue-soft" : "hover:bg-surface",
                   )}
                 >
-                  <span className="text-xs text-muted">
-                    {format(new Date(meetingDate(m)), "h:mm a")}
+                  <span className="flex items-center gap-1 text-xs text-muted">
+                    {tab === "personal" ? "Always available" : format(new Date(meetingDate(m)), "h:mm a")}
+                    {m.recurrence && <Repeat className="h-3 w-3" aria-label="Recurring" />}
                     {m.status === "live" && <span className="ml-2 font-bold text-zoom-green">In progress</span>}
                   </span>
                   <span className="truncate text-sm font-bold text-ink">{m.title}</span>

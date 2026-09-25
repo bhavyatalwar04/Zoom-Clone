@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatDuration, formatMeetingId, initials, parseMeetingInput, toZonedParts } from "./format";
+import { describeRecurrence, formatDuration, formatMeetingId, initials, parseMeetingInput, toZonedParts } from "./format";
 import { buildInvitation } from "./invitation";
 
 describe("formatMeetingId", () => {
@@ -63,5 +63,19 @@ describe("buildInvitation", () => {
     expect(text).toContain("http://localhost:3000/j/84529310472?pwd=abc123");
     expect(text).toContain("Meeting ID: 845 2931 0472");
     expect(text).toContain("Passcode: abc123");
+  });
+});
+
+describe("describeRecurrence", () => {
+  // 2026-10-01 is a Thursday
+  const start = "2026-10-01T04:30:00Z";
+  it("describes weekly series ending after N occurrences", () => {
+    expect(describeRecurrence({ type: "weekly", interval: 1, count: 8, until: null }, start)).toBe("Every week on Thu, 8 occurrences");
+  });
+  it("describes intervals and end dates", () => {
+    expect(describeRecurrence({ type: "daily", interval: 2, count: null, until: "2026-10-12T18:29:59Z" }, start)).toBe(
+      "Every 2 days, until Oct 12, 2026",
+    );
+    expect(describeRecurrence({ type: "monthly", interval: 1, count: 3, until: null }, start)).toBe("Every month on day 1, 3 occurrences");
   });
 });

@@ -1,4 +1,5 @@
 import { addMinutes, format, isToday, isTomorrow, isYesterday } from "date-fns";
+import type { Recurrence } from "./types";
 
 /** "84529310472" -> "845 2931 0472" (Zoom's grouping). */
 export function formatMeetingId(code: string): string {
@@ -84,4 +85,19 @@ export function timeZoneLabel(timeZone: string): string {
   } catch {
     return timeZone;
   }
+}
+
+const UNITS = { daily: "day", weekly: "week", monthly: "month" } as const;
+
+/**
+ * Zoom-style summary of a recurrence, e.g. "Every week on Thu, 8 occurrences" or
+ * "Every 2 days, until Oct 12, 2026". `firstStart` gives the weekday / day of month.
+ */
+export function describeRecurrence(r: Recurrence, firstStart: string): string {
+  const unit = UNITS[r.type];
+  const every = r.interval === 1 ? `Every ${unit}` : `Every ${r.interval} ${unit}s`;
+  const start = new Date(firstStart);
+  const on = r.type === "weekly" ? ` on ${format(start, "EEE")}` : r.type === "monthly" ? ` on day ${format(start, "d")}` : "";
+  const end = r.count ? `, ${r.count} occurrences` : r.until ? `, until ${format(new Date(r.until), "MMM d, yyyy")}` : "";
+  return `${every}${on}${end}`;
 }

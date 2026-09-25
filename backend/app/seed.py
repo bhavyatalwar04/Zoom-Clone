@@ -6,6 +6,7 @@ Run manually with:  python -m app.seed --reset
 
 import argparse
 import random
+from functools import cache
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
@@ -23,10 +24,20 @@ from .models import (
     MeetingStatus,
     MeetingType,
     ParticipantRole,
+    RecurrenceType,
     TranscriptSegment,
     User,
 )
-from .security import generate_meeting_code, generate_passcode, generate_start_token
+from .security import generate_meeting_code, generate_passcode, generate_start_token, hash_password
+from .services.meetings import get_or_create_personal_room
+
+# Every seeded account can sign in with this password (see README).
+DEMO_PASSWORD = "zoom1234"
+
+
+@cache
+def _demo_password_hash() -> str:
+    return hash_password(DEMO_PASSWORD)  # hashed once per process: hashing is deliberately slow
 
 CONTACTS = [
     ("Priya Sharma", "priya.sharma@example.com", "#E8710A", "Product Manager"),
@@ -63,6 +74,7 @@ def _meeting(host: User, title: str, start: datetime, minutes: int, **kwargs) ->
 def seed(db: Session) -> None:
     rng = random.Random(42)
     settings = get_settings()
+    password_hash = _demo_password_hash()
 
     me = User(
         full_name="Bhavya Talwar",
@@ -70,8 +82,12 @@ def seed(db: Session) -> None:
         avatar_color="#0B5CFF",
         job_title="Software Engineer",
         timezone="Asia/Kolkata",
+        password_hash=password_hash,
     )
-    contacts = [User(full_name=n, email=e, avatar_color=c, job_title=j, timezone="Asia/Kolkata") for n, e, c, j in CONTACTS]
+    contacts = [
+        User(full_name=n, email=e, avatar_color=c, job_title=j, timezone="Asia/Kolkata", password_hash=password_hash)
+        for n, e, c, j in CONTACTS
+    ]
     db.add_all([me, *contacts])
     db.flush()
     priya, arjun, sara, rohan, emily, david = contacts
@@ -80,14 +96,15 @@ def seed(db: Session) -> None:
     # ---- upcoming (scheduled, not yet started)
     upcoming = [
         _meeting(me, "Daily Standup", now + timedelta(hours=1), 15,
-                 description="Quick sync on yesterday's progress and today's plan.", join_before_host=True),
+                 description="Quick sync on yesterday's progress and today's plan.", join_before_host=True,
+                 recurrence=RecurrenceType.DAILY, recurrence_count=10),
         _meeting(me, "Sprint Planning – Q4 Roadmap", _at(1, 5, 30), 60,
                  description="Plan the next sprint and estimate the backlog."),
         _meeting(me, "Design Review: Meeting Controls", _at(2, 9, 0), 45,
                  description="Walk through the new in-meeting toolbar designs.", mute_on_entry=True),
         _meeting(priya, "Product Sync with Priya", _at(1, 8, 0), 30,
                  description="Weekly product / engineering alignment."),
-        _meeting(me, "1:1 with Arjun", _at(3, 6, 30), 30),
+        _meeting(me, "1:1 with Arjun", _at(3, 6, 30), 30, recurrence=RecurrenceType.WEEKLY, recurrence_count=8),
         _meeting(emily, "Release Readiness Check", _at(5, 10, 0), 45,
                  description="Go / no-go for the upcoming release."),
     ]
@@ -102,6 +119,8 @@ def seed(db: Session) -> None:
     for index, meeting in enumerate(upcoming):
         meeting.invitees = [MeetingInvitee(email=u.email, user_id=u.id) for u in invitee_map[index]]
     db.add_all(upcoming)
+    db.flush()
+    get_or_create_personal_room(db, me)
 
     # ---- recent (already took place)
     past_specs = [

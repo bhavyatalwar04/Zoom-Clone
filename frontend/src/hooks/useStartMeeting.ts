@@ -22,10 +22,10 @@ export function useStartInstantMeeting() {
   const [settings] = useSettings();
   const [starting, setStarting] = useState(false);
 
-  const start = async (withVideo = settings.startWithVideo) => {
+  const start = async (withVideo = settings.startWithVideo, usePmi = settings.usePmi) => {
     setStarting(true);
     try {
-      const meeting = await api.createInstant({ host_video_on: withVideo });
+      const meeting = await api.createInstant({ host_video_on: withVideo, use_pmi: usePmi });
       router.push(`${hostStartPath(meeting)}&video=${withVideo ? 1 : 0}`);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Unable to start the meeting.");
