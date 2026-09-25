@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/Button";
 import { Modal } from "@/components/ui/Modal";
+import { cn } from "@/lib/cn";
 import type { PollView } from "@/lib/types";
 
 interface PollVoteModalProps {
@@ -52,7 +53,10 @@ export function PollVoteModal({ poll, onClose, onSubmit }: PollVoteModalProps) {
           {poll.options.map((option) => (
             <label
               key={option.id}
-              className="flex cursor-pointer items-center gap-2.5 rounded-lg px-3 py-2 text-sm ring-1 ring-line hover:bg-surface has-[:checked]:bg-zoom-blue-soft has-[:checked]:ring-zoom-blue"
+              className={cn(
+                "flex cursor-pointer items-center gap-2.5 rounded-lg px-3 py-2 text-sm ring-1 ring-line hover:bg-surface",
+                selected.includes(option.id) && "bg-zoom-blue-soft ring-zoom-blue hover:bg-zoom-blue-soft",
+              )}
             >
               <input
                 type={poll.allow_multiple ? "checkbox" : "radio"}

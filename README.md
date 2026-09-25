@@ -196,6 +196,7 @@ Camera, microphone and screen sharing only work on HTTPS (or localhost), which b
 | `realtime/handlers/` | One module per feature (`basics`, `chat`, `moderation`, `polls`, `recording`, `breakout`, `whiteboard`). Each message type is registered with `@on("type", Access.X)`, and `dispatch` checks the sender's role before calling it. |
 | `realtime/lifecycle.py` | Admit, waiting room, leave, remove, host handoff, end meeting, and the sweeper that ends abandoned meetings |
 | `realtime/state.py`, `realtime/store.py` | In-memory room state (peers, waiting room, security, groups), and database helpers run in a thread pool |
+| `deps.py`, `errors.py` | Current-user dependency (bearer token, else the default user); the `AppError` types and their single JSON error shape |
 | `security.py` | Meeting ID / PMI / passcode generation, password hashing, signed session and WebSocket tokens |
 | `seed.py` | Sample users and meetings, generated relative to "now" |
 
@@ -209,6 +210,7 @@ Camera, microphone and screen sharing only work on HTTPS (or localhost), which b
 | `components/polls/`, `components/breakout/`, `components/whiteboard/` | Polls panel and results, breakout rooms panel and banners, interactive and read-only whiteboard |
 | `lib/recording/`, `lib/rtc/background-processor.ts`, `lib/whiteboard/` | Meeting recorder, on-device background effects, whiteboard rendering and hit-testing |
 | `components/ui/` | Reusable primitives: Button, Modal, Popover, Avatar, Field, Checkbox/Switch, Toast |
+| `components/layout/`, `components/auth/` | Top navigation and profile menu; the sign-in / sign-up form |
 | `components/home/`, `components/meetings/` | Dashboard cards, schedule/join dialogs, meeting details |
 | `components/room/` | Pre-join, meeting room, video stage/tiles, toolbar, participants/chat/transcript panels, captions overlay, timer |
 | `components/meetings/InsightsView.tsx` | Post-meeting insights: stat tiles, talk-time chart, engagement table |
@@ -216,6 +218,8 @@ Camera, microphone and screen sharing only work on HTTPS (or localhost), which b
 | `lib/rtc/room-client.ts` | **All WebRTC and WebSocket logic**, independent of React |
 | `lib/api.ts`, `lib/types.ts` | Typed API client that mirrors the backend schemas |
 | `lib/meeting-time.ts` | Meeting timer and end-of-meeting countdown (pure functions, unit tested) |
+| `lib/auth.ts`, `lib/format.ts`, `lib/invitation.ts`, `lib/cn.ts` | Session token storage; Meeting ID / date / recurrence formatting; invitation text; class-name merging |
+| `postcss.config.mjs`, `postcss-legacy-fallbacks.cjs` | Tailwind build plus fallbacks for older browsers (see *Browser support*) |
 | `hooks/` | SWR data hooks, camera preview, active speaker and talk time, speech captions, keyboard shortcuts, picture-in-picture, local settings |
 
 ---
@@ -407,6 +411,7 @@ erDiagram
 | `GET /api/meetings/{id}/insights` | Post-meeting insights (talk time, engagement, reactions, polls, recordings) |
 | `GET /api/meetings/{id}/polls` / `breakouts` / `whiteboard` | Poll results, breakout rooms and who was in them, saved whiteboard |
 | `WS /ws/meetings/{id}?token=…` | Signalling and live meeting events |
+| `GET /api/health` | Health check (used by the Render deployment) |
 
 Errors use one shape, `{"detail": {"code": "WAITING_FOR_HOST", "message": "…"}}`, so the UI can branch on `code`.
 
@@ -434,6 +439,7 @@ Errors use one shape, `{"detail": {"code": "WAITING_FOR_HOST", "message": "…"}
 - **Single backend process.** Live room state (who is connected) is kept in memory, so the API must run as one worker. Scaling out would move it to Redis pub/sub.
 - **Recording is local**, like Zoom's *Record on this computer*. Cloud recording would need a media server. **Background effects** download MediaPipe's WebAssembly runtime (jsDelivr) and model (Google storage) on first use.
 - **Camera and microphone need a secure context.** Browsers only allow them on `https://` or `localhost`.
+- **Browser support.** Tailwind CSS v4 targets Chrome 111 / Safari 16.4 and puts every style in CSS cascade layers, which older browsers ignore entirely (the page shows unstyled). The build therefore flattens the layers (`@csstools/postcss-cascade-layers`) and adds fallbacks for `dvh` units and the `translate` / `scale` properties (`postcss-legacy-fallbacks.cjs`), so the UI also renders on older mobile browsers (roughly Chrome 88+ and Safari 14+).
 - **Captions.** Speech recognition uses the browser's built-in Web Speech API (Chrome and Edge; Chrome uses Google's speech service). If you test with two tabs on one computer, both tabs hear the same microphone, so captions appear twice. Talk time is measured by each participant's own browser and reported to the server.
 - Zoom's look is recreated with its public colours, layout and interaction patterns. No Zoom assets or trademarked logos are included, and the wordmark is plain styled text.
 
@@ -453,6 +459,7 @@ Zoom-Clone/
 │   ├── src/components/ UI primitives, dashboard, meeting room
 │   ├── src/hooks/      data, media, and settings hooks
 │   ├── src/lib/        API client, types, formatting, WebRTC RoomClient
+│   ├── postcss.config.mjs, postcss-legacy-fallbacks.cjs   CSS build (older-browser fallbacks)
 │   └── .env.example
 └── render.yaml         Render Blueprint for the backend
 ```
