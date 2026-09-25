@@ -1,0 +1,89 @@
+from typing import Literal
+
+from fastapi import APIRouter, Query, status
+
+from ..deps import CurrentUser, DbSession
+from ..schemas import (
+    ChatMessageOut,
+    InstantMeetingCreate,
+    JoinRequest,
+    JoinResponse,
+    MeetingLookup,
+    MeetingOut,
+    ParticipantOut,
+    ScheduledMeetingCreate,
+    ScheduledMeetingUpdate,
+)
+from ..security import create_ws_token
+from ..services import meetings as service
+
+router = APIRouter(prefix="/api/meetings", tags=["meetings"])
+
+
+@router.get("", response_model=list[MeetingOut])
+def list_meetings(
+    db: DbSession,
+    user: CurrentUser,
+    scope: Literal["upcoming", "recent"] = "upcoming",
+    limit: int = Query(default=50, ge=1, le=200),
+):
+    meetings = service.list_upcoming(db, user, limit) if scope == "upcoming" else service.list_recent(db, user, limit)
+    return [service.to_meeting_out(m, user) for m in meetings]
+
+
+@router.post("/instant", response_model=MeetingOut, status_code=status.HTTP_201_CREATED)
+def create_instant_meeting(data: InstantMeetingCreate, db: DbSession, user: CurrentUser):
+    return service.to_meeting_out(service.create_instant_meeting(db, user, data), user)
+
+
+@router.post("", response_model=MeetingOut, status_code=status.HTTP_201_CREATED)
+def schedule_meeting(data: ScheduledMeetingCreate, db: DbSession, user: CurrentUser):
+    return service.to_meeting_out(service.schedule_meeting(db, user, data), user)
+
+
+@router.get("/{code}", response_model=MeetingOut)
+def get_meeting(code: str, db: DbSession, user: CurrentUser):
+    return service.to_meeting_out(service.get_meeting(db, code), user)
+
+
+@router.put("/{code}", response_model=MeetingOut)
+def update_meeting(code: str, data: ScheduledMeetingUpdate, db: DbSession, user: CurrentUser):
+    meeting = service.get_hosted_meeting(db, code, user)
+    return service.to_meeting_out(service.update_scheduled_meeting(db, meeting, data), user)
+
+
+@router.delete("/{code}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_meeting(code: str, db: DbSession, user: CurrentUser):
+    service.delete_meeting(db, service.get_hosted_meeting(db, code, user))
+
+
+@router.get("/{code}/lookup", response_model=MeetingLookup)
+def lookup_meeting(code: str, db: DbSession):
+    """Public endpoint used by the join flow to validate that a Meeting ID exists."""
+    return service.to_lookup(service.get_meeting(db, code))
+
+
+@router.post("/{code}/join", response_model=JoinResponse)
+def join_meeting(code: str, data: JoinRequest, db: DbSession, user: CurrentUser):
+    meeting = service.get_meeting(db, code)
+    participant, is_host = service.join_meeting(db, meeting, user, data)
+    return JoinResponse(
+        participant=ParticipantOut.model_validate(participant),
+        ws_token=create_ws_token(participant.id, meeting.meeting_code),
+        meeting=service.to_lookup(meeting),
+        is_host=is_host,
+        passcode=meeting.passcode,
+        join_url=service.build_join_url(meeting),
+        mute_on_entry=meeting.mute_on_entry and not is_host,
+        video_on_entry=meeting.host_video_on if is_host else meeting.participant_video_on,
+    )
+
+
+@router.get("/{code}/participants", response_model=list[ParticipantOut])
+def list_participants(code: str, db: DbSession, _user: CurrentUser):
+    return service.get_meeting(db, code).participants
+
+
+@router.get("/{code}/messages", response_model=list[ChatMessageOut])
+def list_messages(code: str, db: DbSession, _user: CurrentUser):
+    return [service.to_chat_out(m) for m in service.get_meeting(db, code).messages]

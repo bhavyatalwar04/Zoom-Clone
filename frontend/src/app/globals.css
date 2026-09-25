@@ -1,0 +1,77 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: var(--font-lato), -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+
+  /* Zoom Workplace palette */
+  --color-zoom-blue: #0b5cff;
+  --color-zoom-blue-hover: #0a4fdb;
+  --color-zoom-blue-soft: #e8efff;
+  --color-zoom-orange: #ff742e;
+  --color-zoom-orange-hover: #f2651d;
+  --color-zoom-green: #12a150;
+  --color-zoom-red: #e02828;
+  --color-zoom-red-hover: #c71f1f;
+
+  --color-ink: #131619;
+  --color-ink-2: #3d4652;
+  --color-muted: #6e7680;
+  --color-line: #e4e6eb;
+  --color-surface: #f7f8fa;
+
+  /* in-meeting (dark) palette */
+  --color-room: #1a1a1a;
+  --color-room-tile: #242424;
+  --color-room-panel: #ffffff;
+  --color-room-bar: #1a1a1a;
+  --color-room-hover: #2e2e2e;
+  --color-room-text: #e6e6e6;
+
+  --shadow-pop: 0 8px 24px rgba(19, 22, 25, 0.16), 0 2px 6px rgba(19, 22, 25, 0.08);
+
+  --animate-pop: pop 0.16s ease-out;
+  --animate-float-up: float-up 8s ease-out forwards;
+  --animate-toast: toast-in 0.2s ease-out;
+
+  @keyframes pop {
+    from { opacity: 0; transform: scale(0.97) translateY(4px); }
+    to { opacity: 1; transform: none; }
+  }
+  @keyframes toast-in {
+    from { opacity: 0; transform: translateY(-8px); }
+    to { opacity: 1; transform: none; }
+  }
+  @keyframes float-up {
+    0% { opacity: 0; transform: scale(0.6); }
+    8% { opacity: 1; transform: scale(1.1); }
+    12% { transform: scale(1); }
+    85% { opacity: 1; }
+    100% { opacity: 0; }
+  }
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background: #ffffff;
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Thin scrollbars like the Zoom client */
+.scroll-thin {
+  scrollbar-width: thin;
+  scrollbar-color: #c9ccd2 transparent;
+}
+.scroll-dark {
+  scrollbar-width: thin;
+  scrollbar-color: #4a4a4a transparent;
+}
+
+video.mirror {
+  transform: scaleX(-1);
+}
