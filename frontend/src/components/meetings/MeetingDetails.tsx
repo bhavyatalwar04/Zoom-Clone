@@ -2,11 +2,12 @@
 
 import { format } from "date-fns";
 import clsx from "clsx";
-import { ChartColumn, ChevronLeft, Copy, FileText, ListChecks, MessageSquare, Pencil, Trash2, Users } from "lucide-react";
-import { useState } from "react";
+import { ChartColumn, ChevronLeft, Copy, Download, FileText, ListChecks, MessageSquare, PenLine, Pencil, Trash2, Users } from "lucide-react";
+import { useRef, useState } from "react";
 import useSWR from "swr";
 import { PollResults } from "@/components/polls/PollResults";
 import { TranscriptView } from "@/components/transcript/TranscriptView";
+import { WhiteboardCanvas, type WhiteboardCanvasHandle } from "@/components/whiteboard/WhiteboardCanvas";
 import { Avatar } from "@/components/ui/Avatar";
 import { Button } from "@/components/ui/Button";
 import { useToast } from "@/components/ui/Toast";
@@ -123,6 +124,7 @@ const HISTORY_TABS = [
   { id: "chat", label: "Chat", icon: MessageSquare },
   { id: "polls", label: "Polls", icon: ListChecks },
   { id: "transcript", label: "Transcript", icon: FileText },
+  { id: "whiteboard", label: "Whiteboard", icon: PenLine },
 ] as const;
 
 type HistoryTab = (typeof HISTORY_TABS)[number]["id"];
@@ -135,6 +137,9 @@ function MeetingHistory({ code, title }: { code: string; title: string }) {
   const { data: messages } = useSWR(["messages", code], () => api.messages(code));
   const { data: transcript } = useSWR(["transcript", code], () => api.transcript(code));
   const { data: polls } = useSWR(["polls", code], () => api.polls(code));
+  const { data: breakouts } = useSWR(["breakouts", code], () => api.breakouts(code));
+  const { data: strokes } = useSWR(["whiteboard", code], () => api.whiteboard(code));
+  const board = useRef<WhiteboardCanvasHandle>(null);
 
   // One row per person, even if they re-joined several times.
   const people = participants
@@ -183,6 +188,40 @@ function MeetingHistory({ code, title }: { code: string; title: string }) {
           ))}
         </ul>
       )}
+
+      {tab === "participants" && breakouts && breakouts.length > 0 && (
+        <section className="mt-6">
+          <h3 className="mb-2 text-sm font-bold text-ink">Breakout rooms</h3>
+          <ul className="space-y-1.5 text-sm">
+            {breakouts.map((b, i) => (
+              <li key={i} className="flex gap-2">
+                <span className="w-20 shrink-0 font-bold text-ink-2">{b.name}</span>
+                <span className="text-muted">{b.participants.join(", ") || "Empty"}</span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
+      {tab === "whiteboard" &&
+        (strokes && strokes.length > 0 ? (
+          <div>
+            <div className="aspect-video w-full rounded-lg bg-surface p-2">
+              <WhiteboardCanvas ref={board} strokes={strokes} />
+            </div>
+            <button
+              onClick={() => {
+                const url = board.current?.toPng();
+                if (url) Object.assign(document.createElement("a"), { href: url, download: `whiteboard_${code}.png` }).click();
+              }}
+              className="mt-3 flex items-center gap-1.5 text-sm font-bold text-zoom-blue hover:underline"
+            >
+              <Download className="h-4 w-4" /> Save as PNG
+            </button>
+          </div>
+        ) : (
+          <p className="text-sm text-muted">The whiteboard wasn&apos;t used in this meeting.</p>
+        ))}
 
       {tab === "chat" && (
         <>

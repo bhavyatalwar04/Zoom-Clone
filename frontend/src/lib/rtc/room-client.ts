@@ -1,4 +1,13 @@
-import type { ChatMessage, ParticipantRole, PollDraft, PollView, TranscriptSegment } from "../types";
+import type {
+  BreakoutState,
+  ChatMessage,
+  ParticipantRole,
+  PollDraft,
+  PollView,
+  TranscriptSegment,
+  WhiteboardState,
+  WhiteboardStroke,
+} from "../types";
 import { type BackgroundEffect, BackgroundProcessor } from "./background-processor";
 
 /**
@@ -97,6 +106,10 @@ export type RoomNotice =
   | { kind: "now-host" }
   | { kind: "captions"; enabled: boolean }
   | { kind: "blocked"; message: string }
+  | { kind: "moved"; roomName: string | null }
+  | { kind: "breakout-closing"; seconds: number }
+  | { kind: "broadcast"; text: string; from: string }
+  | { kind: "help"; from: string; roomName: string; position: number }
   | { kind: "error"; message: string }
   | { kind: "media-error"; message: string };
 
@@ -130,6 +143,10 @@ export interface RoomSnapshot {
   /** Background blur / virtual background applied to my camera. */
   background: BackgroundEffect;
   backgroundLoading: boolean;
+  breakout: BreakoutState | null;
+  /** The breakout room I am in (null = main session). */
+  myRoomName: string | null;
+  whiteboard: WhiteboardState & { strokes: WhiteboardStroke[] };
   notice: { id: number; notice: RoomNotice } | null;
 }
 
@@ -152,7 +169,17 @@ type ServerMessage =
       waiting: WaitingPerson[];
       polls: PollView[];
       recording: { active: boolean; by: string[] };
+      whiteboard: WhiteboardState & { strokes: WhiteboardStroke[] };
     }
+  | { type: "moved"; group: string | null; room_name: string | null; self: PeerInfo; peers: PeerInfo[]; messages: ChatMessage[] }
+  | { type: "breakout-state"; breakout: BreakoutState | null }
+  | { type: "breakout-closing"; seconds: number }
+  | { type: "breakout-message"; text: string; from: string }
+  | { type: "breakout-help"; from: string; room_name: string; position: number }
+  | { type: "whiteboard-state"; whiteboard: WhiteboardState }
+  | { type: "wb-stroke"; stroke: WhiteboardStroke; done: boolean }
+  | { type: "wb-erase"; ids: string[] }
+  | { type: "wb-clear" }
   | { type: "poll"; poll: PollView }
   | { type: "recording-state"; recording: { active: boolean; by: string[] } }
   | { type: "waiting"; title: string }
@@ -254,6 +281,9 @@ export class RoomClient {
       recording: { active: false, by: [] },
       background: { kind: "none" },
       backgroundLoading: false,
+      breakout: null,
+      myRoomName: null,
+      whiteboard: { open: false, opened_by: null, opened_by_name: null, strokes: [] },
       notice: null,
     };
   }
@@ -376,6 +406,8 @@ export class RoomClient {
           waiting: msg.waiting,
           polls: msg.polls,
           recording: msg.recording,
+          whiteboard: msg.whiteboard,
+          myRoomName: null,
           self: { ...msg.self, audio: this.audioEnabled, video: !!this.cameraTrack, screen: !!this.screenTrack },
           messages: msg.messages,
           transcript: msg.transcript,
@@ -412,6 +444,46 @@ export class RoomClient {
       }
       case "recording-state":
         this.update({ recording: msg.recording });
+        break;
+      case "moved": {
+        // Into / out of a breakout room: new group, new peers, that room's chat.
+        this.closeAllLinks();
+        const self = this.snapshot.self ? { ...this.snapshot.self, group: msg.group } : null;
+        this.update({
+          self,
+          myRoomName: msg.room_name,
+          peers: msg.peers.map((p) => ({ ...p, stream: null, connection: "new" })),
+          messages: msg.messages,
+          liveCaptions: [],
+          reactions: [],
+        });
+        this.notify({ kind: "moved", roomName: msg.room_name });
+        for (const peer of msg.peers) await this.callPeer(peer.id); // I am the newcomer here
+        break;
+      }
+      case "breakout-state":
+        this.update({ breakout: msg.breakout });
+        break;
+      case "breakout-closing":
+        this.notify({ kind: "breakout-closing", seconds: msg.seconds });
+        break;
+      case "breakout-message":
+        this.notify({ kind: "broadcast", text: msg.text, from: msg.from });
+        break;
+      case "breakout-help":
+        this.notify({ kind: "help", from: msg.from, roomName: msg.room_name, position: msg.position });
+        break;
+      case "whiteboard-state":
+        this.update({ whiteboard: { ...this.snapshot.whiteboard, ...msg.whiteboard } });
+        break;
+      case "wb-stroke":
+        this.mergeStroke(msg.stroke);
+        break;
+      case "wb-erase":
+        this.removeStrokes(msg.ids);
+        break;
+      case "wb-clear":
+        this.update({ whiteboard: { ...this.snapshot.whiteboard, strokes: [] } });
         break;
       case "security":
         this.update({ security: msg.security });
@@ -808,6 +880,80 @@ export class RoomClient {
   /** Tell everyone I started / stopped recording (the recording itself happens locally). */
   setRecording(active: boolean) {
     this.send({ type: "host:recording", active });
+  }
+
+  // ------------------------------------------------------------------ breakout rooms
+
+  breakoutCreate(count: number, auto: boolean) {
+    this.send({ type: "host:breakout-create", count, auto });
+  }
+
+  breakoutAssign(target: number, position: number | null) {
+    this.send({ type: "host:breakout-assign", target, position });
+  }
+
+  breakoutOpen() {
+    this.send({ type: "host:breakout-open" });
+  }
+
+  breakoutClose() {
+    this.send({ type: "host:breakout-close" });
+  }
+
+  breakoutBroadcast(text: string) {
+    this.send({ type: "host:breakout-broadcast", text });
+  }
+
+  breakoutJoin(position: number) {
+    this.send({ type: "breakout-join", position });
+  }
+
+  breakoutLeave() {
+    this.send({ type: "breakout-leave" });
+  }
+
+  breakoutAskForHelp() {
+    this.send({ type: "breakout-help" });
+  }
+
+  // ------------------------------------------------------------------ whiteboard
+
+  setWhiteboardOpen(open: boolean) {
+    this.send({ type: "wb-open", open });
+  }
+
+  /**
+   * Sends part of a stroke I am drawing. The first chunk carries the style; later chunks only
+   * new points. My own copy is updated immediately (the server doesn't echo it back).
+   */
+  sendStroke(chunk: WhiteboardStroke, done: boolean) {
+    this.mergeStroke({ ...chunk, by: this.snapshot.self?.id });
+    this.send({ type: "wb-stroke", stroke: chunk, done });
+  }
+
+  eraseStrokes(ids: string[]) {
+    if (!ids.length) return;
+    this.removeStrokes(ids);
+    this.send({ type: "wb-erase", ids });
+  }
+
+  clearWhiteboard() {
+    this.send({ type: "wb-clear" });
+  }
+
+  private mergeStroke(chunk: WhiteboardStroke) {
+    const strokes = this.snapshot.whiteboard.strokes;
+    const index = strokes.findIndex((s) => s.id === chunk.id);
+    const next =
+      index === -1
+        ? [...strokes, chunk]
+        : strokes.map((s, i) => (i === index ? { ...s, points: [...s.points, ...chunk.points] } : s));
+    this.update({ whiteboard: { ...this.snapshot.whiteboard, strokes: next } });
+  }
+
+  private removeStrokes(ids: string[]) {
+    const strokes = this.snapshot.whiteboard.strokes.filter((s) => !ids.includes(s.id));
+    this.update({ whiteboard: { ...this.snapshot.whiteboard, strokes } });
   }
 
   /** Host / co-host commands; the server checks the role again. */

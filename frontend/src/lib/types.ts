@@ -165,3 +165,42 @@ export interface RecordingInfo {
   ended_at: string | null;
   duration_seconds: number;
 }
+export type WhiteboardTool = "pen" | "highlighter" | "line" | "rect" | "ellipse" | "text";
+
+/** One whiteboard element. Points are normalised to 0..1 of the board's width / height. */
+export interface WhiteboardStroke {
+  id: string;
+  tool: WhiteboardTool;
+  color: string;
+  width: number;
+  points: [number, number][];
+  text?: string;
+  by?: number;
+}
+
+export interface WhiteboardState {
+  open: boolean;
+  opened_by: number | null;
+  opened_by_name: string | null;
+}
+
+export interface BreakoutRoomState {
+  position: number;
+  group: string | null;
+  name: string;
+  members: { id: number; display_name: string }[];
+  assigned: number[];
+}
+
+export interface BreakoutState {
+  open: boolean;
+  closing: boolean;
+  rooms: BreakoutRoomState[];
+}
+
+export interface BreakoutHistory {
+  name: string;
+  opened_at: string;
+  closed_at: string | null;
+  participants: string[];
+}

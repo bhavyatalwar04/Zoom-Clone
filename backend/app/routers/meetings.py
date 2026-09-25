@@ -1,9 +1,13 @@
-from typing import Literal
+import json
+from typing import Any, Literal
 
 from fastapi import APIRouter, Query, status
+from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
 from ..deps import CurrentUser, DbSession
 from ..schemas import (
+    BreakoutRoomOut,
     ChatMessageOut,
     InstantMeetingCreate,
     JoinRequest,
@@ -17,6 +21,7 @@ from ..schemas import (
     ScheduledMeetingUpdate,
     TranscriptSegmentOut,
 )
+from ..models import BreakoutAssignment, BreakoutRoom, WhiteboardStroke
 from ..security import create_ws_token
 from ..services import meetings as service
 from ..services import polls as poll_service
@@ -92,8 +97,12 @@ def list_participants(code: str, db: DbSession, user: CurrentUser):
 @router.get("/{code}/messages", response_model=list[ChatMessageOut])
 def list_messages(code: str, db: DbSession, user: CurrentUser):
     meeting = service.get_accessible_meeting(db, code, user)
-    # Private messages stay private: the saved history only contains messages sent to everyone.
-    return [service.to_chat_out(m) for m in meeting.messages if m.recipient_participant_id is None]
+    # The saved history is the main session's chat to everyone: private and breakout-room messages stay private.
+    return [
+        service.to_chat_out(m)
+        for m in meeting.messages
+        if m.recipient_participant_id is None and m.breakout_room_id is None
+    ]
 
 
 @router.get("/{code}/transcript", response_model=list[TranscriptSegmentOut])
@@ -110,3 +119,29 @@ def get_insights(code: str, db: DbSession, user: CurrentUser):
 def list_polls(code: str, db: DbSession, user: CurrentUser):
     meeting = service.get_accessible_meeting(db, code, user)
     return [poll_service.poll_view(p, with_results=True) for p in poll_service.list_polls(db, meeting.id)]
+
+@router.get("/{code}/breakouts", response_model=list[BreakoutRoomOut])
+def list_breakouts(code: str, db: DbSession, user: CurrentUser):
+    meeting = service.get_accessible_meeting(db, code, user)
+    rooms = db.scalars(
+        select(BreakoutRoom)
+        .where(BreakoutRoom.meeting_id == meeting.id)
+        .order_by(BreakoutRoom.opened_at, BreakoutRoom.position)
+        .options(selectinload(BreakoutRoom.assignments).selectinload(BreakoutAssignment.participant))
+    ).all()
+    return [
+        BreakoutRoomOut(
+            name=r.name,
+            opened_at=r.opened_at,
+            closed_at=r.closed_at,
+            participants=list(dict.fromkeys(a.participant.display_name for a in r.assignments)),
+        )
+        for r in rooms
+    ]
+
+
+@router.get("/{code}/whiteboard")
+def get_whiteboard(code: str, db: DbSession, user: CurrentUser) -> list[dict[str, Any]]:
+    meeting = service.get_accessible_meeting(db, code, user)
+    rows = db.scalars(select(WhiteboardStroke).where(WhiteboardStroke.meeting_id == meeting.id).order_by(WhiteboardStroke.id))
+    return [json.loads(r.data) for r in rows]

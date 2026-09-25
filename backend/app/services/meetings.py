@@ -13,6 +13,8 @@ from ..config import get_settings
 from ..database import utcnow
 from ..errors import AppError, MeetingAccessDenied, MeetingNotFound, NotMeetingHost
 from ..models import (
+    BreakoutAssignment,
+    BreakoutRoom,
     ChatMessage,
     Meeting,
     MeetingInvitee,
@@ -373,4 +375,11 @@ def end_meeting(db: Session, meeting_id: int) -> None:
         .where(MeetingRecording.meeting_id == meeting_id, MeetingRecording.ended_at.is_(None))
         .values(ended_at=now)
     )
+    open_rooms = select(BreakoutRoom.id).where(BreakoutRoom.meeting_id == meeting_id, BreakoutRoom.closed_at.is_(None))
+    db.execute(
+        update(BreakoutAssignment)
+        .where(BreakoutAssignment.breakout_room_id.in_(open_rooms), BreakoutAssignment.left_at.is_(None))
+        .values(left_at=now)
+    )
+    db.execute(update(BreakoutRoom).where(BreakoutRoom.id.in_(open_rooms)).values(closed_at=now))
     db.commit()

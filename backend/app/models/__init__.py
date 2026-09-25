@@ -9,12 +9,15 @@
     meeting_participants ──< meeting_recordings                     (local recordings)
     meetings ──< polls ──< poll_options             polls.py
     polls ──< poll_votes >── meeting_participants
+    meetings ──< breakout_rooms ──< breakout_assignments >── meeting_participants   collaboration.py
+    meetings ──< whiteboard_strokes
 
 Everything that happens in a meeting hangs off the participant who did it, which is what the
 post-meeting insights aggregate over.
 """
 
 from .base import db_enum
+from .collaboration import BreakoutAssignment, BreakoutRoom, WhiteboardStroke
 from .engagement import ActivityKind, ChatMessage, MeetingActivity, MeetingRecording, TranscriptSegment
 from .meeting import Meeting, MeetingInvitee, MeetingStatus, MeetingType
 from .participant import MeetingParticipant, ParticipantRole
@@ -23,6 +26,9 @@ from .user import User
 
 __all__ = [
     "ActivityKind",
+    "BreakoutAssignment",
+    "BreakoutRoom",
+    "WhiteboardStroke",
     "ChatMessage",
     "Meeting",
     "MeetingActivity",

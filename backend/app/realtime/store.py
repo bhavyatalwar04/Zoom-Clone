@@ -7,12 +7,16 @@ SQLAlchemy + SQLite are synchronous, so the async WebSocket code calls these thr
 from datetime import timedelta
 from typing import Any, Callable, TypeVar
 
-from sqlalchemy import or_, select, update
+import json
+
+from sqlalchemy import delete, or_, select, update
 from starlette.concurrency import run_in_threadpool
 
 from ..database import SessionLocal, utcnow
 from ..models import (
     ActivityKind,
+    BreakoutAssignment,
+    BreakoutRoom,
     ChatMessage,
     Meeting,
     MeetingActivity,
@@ -21,6 +25,7 @@ from ..models import (
     MeetingStatus,
     ParticipantRole,
     TranscriptSegment,
+    WhiteboardStroke,
 )
 from ..services import meetings as meeting_service
 from ..services import polls as poll_service
@@ -55,13 +60,16 @@ def open_session(participant_id: int, code: str) -> dict[str, Any] | None:
         }
 
 
-def load_history(meeting_id: int, participant_id: int) -> dict[str, list]:
-    """Chat this participant may see (public + their private messages) and the transcript so far."""
+def load_history(meeting_id: int, participant_id: int, breakout_room_id: int | None = None) -> dict[str, list]:
+    """Chat this participant may see in their room (public + their private messages) and the transcript."""
     with SessionLocal() as session:
         messages = session.scalars(
             select(ChatMessage)
             .where(
                 ChatMessage.meeting_id == meeting_id,
+                ChatMessage.breakout_room_id.is_(None)
+                if breakout_room_id is None
+                else ChatMessage.breakout_room_id == breakout_room_id,
                 or_(
                     ChatMessage.recipient_participant_id.is_(None),
                     ChatMessage.participant_id == participant_id,
@@ -93,10 +101,16 @@ def mark_left(participant_id: int, removed: bool = False) -> None:
         session.commit()
 
 
-def save_chat(meeting_id: int, participant_id: int, text: str, recipient_id: int | None) -> dict[str, Any]:
+def save_chat(
+    meeting_id: int, participant_id: int, text: str, recipient_id: int | None, breakout_room_id: int | None = None
+) -> dict[str, Any]:
     with SessionLocal() as session:
         message = ChatMessage(
-            meeting_id=meeting_id, participant_id=participant_id, recipient_participant_id=recipient_id, content=text
+            meeting_id=meeting_id,
+            participant_id=participant_id,
+            recipient_participant_id=recipient_id,
+            breakout_room_id=breakout_room_id,
+            content=text,
         )
         session.add(message)
         session.commit()
@@ -213,4 +227,73 @@ def recording_stop(recording_id: int) -> None:
             .where(MeetingRecording.id == recording_id, MeetingRecording.ended_at.is_(None))
             .values(ended_at=utcnow())
         )
+        session.commit()
+
+# --------------------------------------------------------------------------- breakout rooms
+
+
+def breakout_open(meeting_id: int, names: list[str]) -> list[int]:
+    with SessionLocal() as session:
+        rows = [BreakoutRoom(meeting_id=meeting_id, name=name, position=i) for i, name in enumerate(names)]
+        session.add_all(rows)
+        session.commit()
+        return [r.id for r in rows]
+
+
+def breakout_close(room_ids: list[int]) -> None:
+    with SessionLocal() as session:
+        now = utcnow()
+        session.execute(update(BreakoutRoom).where(BreakoutRoom.id.in_(room_ids)).values(closed_at=now))
+        session.execute(
+            update(BreakoutAssignment)
+            .where(BreakoutAssignment.breakout_room_id.in_(room_ids), BreakoutAssignment.left_at.is_(None))
+            .values(left_at=now)
+        )
+        session.commit()
+
+
+def breakout_enter(room_id: int, participant_id: int) -> int:
+    with SessionLocal() as session:
+        row = BreakoutAssignment(breakout_room_id=room_id, participant_id=participant_id)
+        session.add(row)
+        session.commit()
+        return row.id
+
+
+def breakout_exit(assignment_id: int) -> None:
+    with SessionLocal() as session:
+        session.execute(
+            update(BreakoutAssignment)
+            .where(BreakoutAssignment.id == assignment_id, BreakoutAssignment.left_at.is_(None))
+            .values(left_at=utcnow())
+        )
+        session.commit()
+
+
+# --------------------------------------------------------------------------- whiteboard
+
+
+def whiteboard_load(meeting_id: int) -> list[dict[str, Any]]:
+    with SessionLocal() as session:
+        rows = session.scalars(
+            select(WhiteboardStroke).where(WhiteboardStroke.meeting_id == meeting_id).order_by(WhiteboardStroke.id)
+        ).all()
+        return [json.loads(r.data) for r in rows]
+
+
+def whiteboard_save(meeting_id: int, participant_id: int, stroke: dict[str, Any]) -> None:
+    with SessionLocal() as session:
+        session.add(
+            WhiteboardStroke(meeting_id=meeting_id, participant_id=participant_id, stroke_key=stroke["id"], data=json.dumps(stroke))
+        )
+        session.commit()
+
+
+def whiteboard_erase(meeting_id: int, keys: list[str] | None) -> None:
+    """Deletes the given strokes, or all of them when `keys` is None."""
+    with SessionLocal() as session:
+        query = delete(WhiteboardStroke).where(WhiteboardStroke.meeting_id == meeting_id)
+        if keys is not None:
+            query = query.where(WhiteboardStroke.stroke_key.in_(keys))
+        session.execute(query)
         session.commit()

@@ -33,6 +33,8 @@ class ChatMessage(Base):
     recipient_participant_id: Mapped[int | None] = mapped_column(
         ForeignKey("meeting_participants.id", ondelete="CASCADE"), index=True
     )
+    # Set when the message was sent inside a breakout room (each room has its own chat).
+    breakout_room_id: Mapped[int | None] = mapped_column(ForeignKey("breakout_rooms.id", ondelete="SET NULL"), index=True)
     content: Mapped[str] = mapped_column(Text)
     sent_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
 

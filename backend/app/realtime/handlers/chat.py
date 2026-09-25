@@ -3,7 +3,7 @@
 from typing import Any
 
 from .. import store
-from ..state import rooms
+from ..state import breakout_room_id, rooms
 from ..store import db
 from . import Access, Ctx, on
 
@@ -27,7 +27,14 @@ async def chat(ctx: Ctx, msg: dict[str, Any]) -> None:
     if not ctx.room.security.allow_chat and not ctx.peer.is_moderator and not (recipient and recipient.is_moderator):
         return await ctx.error("CHAT_DISABLED", "The host has disabled chat.")
 
-    saved = await db(store.save_chat, ctx.meeting_id, ctx.peer.participant_id, text, recipient.participant_id if recipient else None)
+    saved = await db(
+        store.save_chat,
+        ctx.meeting_id,
+        ctx.peer.participant_id,
+        text,
+        recipient.participant_id if recipient else None,
+        breakout_room_id(ctx.peer.group),
+    )
     event = {"type": "chat", "message": saved}
     if recipient is None:
         await rooms.broadcast(ctx.room, event, group=ctx.peer.group)

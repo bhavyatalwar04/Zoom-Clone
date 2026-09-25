@@ -10,7 +10,7 @@ from fastapi import WebSocket
 
 from ..config import get_settings
 from . import store
-from .state import Peer, Room, rooms
+from .state import Peer, Room, breakout_room_id, rooms
 from .store import db
 
 logger = logging.getLogger(__name__)
@@ -28,6 +28,8 @@ welcome_extensions: list[WelcomeExtension] = []
 # ...and clean up after a peer leaves here.
 LeaveHook = Callable[[Room, Peer], Any]
 leave_hooks: list[LeaveHook] = []
+# ...and react right after someone is admitted (e.g. send them back to their breakout room).
+after_admit_hooks: list[LeaveHook] = []
 
 
 async def close_socket(websocket: WebSocket, code: int) -> None:
@@ -73,7 +75,7 @@ async def admit(room: Room, peer: Peer) -> None:
     reads) therefore happens first, and joining the room + choosing both lists happens in one
     step with no `await` in between, so two people joining at the same moment can't interleave.
     """
-    history = await db(store.load_history, room.meeting_id, peer.participant_id)
+    history = await db(store.load_history, room.meeting_id, peer.participant_id, breakout_room_id(peer.group))
     extras: dict[str, Any] = {}
     for extension in welcome_extensions:
         extra = extension(room, peer)
@@ -110,6 +112,42 @@ async def admit(room: Room, peer: Peer) -> None:
         await rooms.send(peer, {"type": "force-mute"})
     if was_waiting:
         await notify_waiting_list(room)
+    for hook in after_admit_hooks:
+        result = hook(room, peer)
+        if asyncio.iscoroutine(result):
+            await result
+
+
+async def move_to_group(room: Room, peer: Peer, group: str | None, info: dict[str, Any]) -> None:
+    """Moves an admitted peer between the main session and a breakout room.
+
+    Same rule as `admit`: the mover gets the peer list of the new group and offers to them,
+    so that list and the `peer-joined` recipients are chosen together, with no await between.
+    """
+    if peer.group == group:
+        return
+    history = await db(store.load_history, room.meeting_id, peer.participant_id, breakout_room_id(group))
+
+    # ---- no awaits from here until the messages are queued ----
+    old_group = peer.group
+    peer.group = group
+    new_mates = [p for p in room.members(group) if p is not peer]
+    old_mates = [p for p in room.members(old_group) if p is not peer]
+    moved = {
+        "type": "moved",
+        "group": group,
+        **info,
+        "self": peer.public(),
+        "peers": [p.public() for p in new_mates],
+        "messages": history["messages"],
+    }
+    left = {"type": "peer-left", "id": peer.participant_id}
+    joined = {"type": "peer-joined", "peer": peer.public()}
+    await asyncio.gather(
+        rooms.send(peer, moved),
+        *(rooms.send(p, left) for p in old_mates),
+        *(rooms.send(p, joined) for p in new_mates),
+    )
 
 
 # --------------------------------------------------------------------------- leaving

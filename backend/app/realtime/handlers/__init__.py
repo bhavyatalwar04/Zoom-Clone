@@ -73,4 +73,4 @@ def target_peer(ctx: Ctx, message: dict[str, Any]) -> Peer | None:
 
 
 # Register every feature's handlers (import for side effects).
-from . import basics, chat, moderation, polls, recording  # noqa: E402,F401
+from . import basics, breakout, chat, moderation, polls, recording, whiteboard  # noqa: E402,F401

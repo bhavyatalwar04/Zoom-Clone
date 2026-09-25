@@ -10,6 +10,7 @@ import {
   Hand,
   Keyboard,
   LayoutGrid,
+  LayoutPanelLeft,
   Link2,
   ListChecks,
   Maximize,
@@ -18,6 +19,7 @@ import {
   MicOff,
   MonitorUp,
   MoreHorizontal,
+  PenLine,
   PictureInPicture2,
   ShieldCheck,
   SmilePlus,
@@ -161,13 +163,15 @@ export interface ToolbarProps {
   onFeedback: (value: Feedback | null) => void;
   participantCount: number;
   unreadMessages: number;
-  panel: "participants" | "chat" | "polls" | null;
+  panel: "participants" | "chat" | "polls" | "breakout" | null;
   view: "gallery" | "speaker";
   activeDevices: { audio: string | null; video: string | null };
   onToggleAudio: () => void;
   onToggleVideo: () => void;
   onToggleShare: () => void;
-  onTogglePanel: (panel: "participants" | "chat" | "polls") => void;
+  onTogglePanel: (panel: "participants" | "chat" | "polls" | "breakout") => void;
+  whiteboardOpen: boolean;
+  onToggleWhiteboard: () => void;
   /** An open poll I haven't answered yet. */
   pollPending: boolean;
   /** I am recording (the Record button becomes Stop Recording). */
@@ -303,6 +307,22 @@ export function Toolbar(props: ToolbarProps) {
           className="hidden lg:flex"
           icon={<Captions className={clsx("h-6 w-6", props.captionsOn && "text-[#6ea1ff]")} />}
         />
+        <ControlButton
+          label="Whiteboards"
+          onClick={props.onToggleWhiteboard}
+          active={props.whiteboardOpen}
+          className="hidden xl:flex"
+          icon={<PenLine className={clsx("h-6 w-6", props.whiteboardOpen && "text-[#6ea1ff]")} />}
+        />
+        {props.isHost && (
+          <ControlButton
+            label="Breakout Rooms"
+            onClick={() => props.onTogglePanel("breakout")}
+            active={props.panel === "breakout"}
+            className="hidden xl:flex"
+            icon={<LayoutPanelLeft className="h-6 w-6" />}
+          />
+        )}
         <div ref={reactionsBtn}>
           <ControlButton label="Reactions" onClick={() => toggle("reactions")} icon={<SmilePlus className="h-6 w-6" />} />
         </div>
@@ -436,6 +456,14 @@ export function Toolbar(props: ToolbarProps) {
         <MenuItem tone="dark" className="xl:hidden" icon={<CircleDot className="h-4 w-4" />} onClick={pick(props.onRecord)}>
           {props.recording ? "Stop recording" : "Record"}
         </MenuItem>
+        <MenuItem tone="dark" className="xl:hidden" icon={<PenLine className="h-4 w-4" />} onClick={pick(props.onToggleWhiteboard)}>
+          {props.whiteboardOpen ? "Close whiteboard" : "Whiteboards"}
+        </MenuItem>
+        {props.isHost && (
+          <MenuItem tone="dark" className="xl:hidden" icon={<LayoutPanelLeft className="h-4 w-4" />} onClick={pick(() => props.onTogglePanel("breakout"))}>
+            Breakout Rooms
+          </MenuItem>
+        )}
         <MenuItem tone="dark" icon={<Sparkles className="h-4 w-4" />} onClick={pick(props.onChooseBackground)}>
           Backgrounds & effects
         </MenuItem>

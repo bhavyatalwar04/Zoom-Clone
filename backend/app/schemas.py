@@ -221,6 +221,13 @@ class PollView(BaseModel):
     my_votes: list[int] = Field(default_factory=list)
 
 
+class BreakoutRoomOut(BaseModel):
+    name: str
+    opened_at: datetime
+    closed_at: datetime | None
+    participants: list[str]
+
+
 class RecordingOut(BaseModel):
     recorded_by: str
     started_at: datetime

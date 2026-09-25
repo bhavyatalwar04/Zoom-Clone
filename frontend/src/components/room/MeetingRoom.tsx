@@ -7,7 +7,10 @@ import { Button } from "@/components/ui/Button";
 import { Modal } from "@/components/ui/Modal";
 import { MenuItem, Popover } from "@/components/ui/Popover";
 import { useToast } from "@/components/ui/Toast";
+import { BreakoutBanners } from "@/components/breakout/BreakoutBanners";
+import { BreakoutPanel } from "@/components/breakout/BreakoutPanel";
 import { PollsPanel } from "@/components/polls/PollsPanel";
+import { Whiteboard } from "@/components/whiteboard/Whiteboard";
 import { PollVoteModal } from "@/components/polls/PollVoteModal";
 import { useActiveSpeaker } from "@/hooks/useActiveSpeaker";
 import { useMeetingRecorder } from "@/hooks/useMeetingRecorder";
@@ -39,7 +42,7 @@ import type { TileModel } from "./VideoTile";
 import { RemoteAudio } from "./VideoTile";
 import { WaitingRoomAlert, WaitingRoomScreen } from "./WaitingRoom";
 
-type Panel = "participants" | "chat" | "transcript" | "polls";
+type Panel = "participants" | "chat" | "transcript" | "polls" | "breakout";
 
 interface MeetingRoomProps {
   join: JoinResponse;
@@ -115,6 +118,9 @@ export function MeetingRoom({ join, initialStream, audio, video, startShare, onE
   const [answering, setAnswering] = useState<PollView | null>(null);
   const [backgroundsOpen, setBackgroundsOpen] = useState(false);
   const seenPolls = useRef(new Set<number>());
+  const [closingAt, setClosingAt] = useState<number | null>(null);
+  const [broadcast, setBroadcast] = useState<{ text: string; from: string } | null>(null);
+  const [helpRequest, setHelpRequest] = useState<{ from: string; roomName: string; position: number } | null>(null);
 
   // Connect once; leaving the page (or unmounting) leaves the meeting and frees the devices.
   useEffect(() => {
@@ -142,10 +148,25 @@ export function MeetingRoom({ join, initialStream, audio, video, startShare, onE
   // Host actions, role changes and errors arriving from the server.
   useEffect(() => {
     if (!room.notice) return;
-    if (room.notice.notice.kind === "ask-unmute") return setAskUnmute(true);
+    const n = room.notice.notice;
+    if (n.kind === "ask-unmute") return setAskUnmute(true);
+    if (n.kind === "breakout-closing") return setClosingAt(Date.now() + n.seconds * 1000);
+    if (n.kind === "broadcast") return setBroadcast({ text: n.text, from: n.from });
+    if (n.kind === "help") return setHelpRequest({ from: n.from, roomName: n.roomName, position: n.position });
+    if (n.kind === "moved") return toast.info(n.roomName ? `You joined ${n.roomName}` : "You returned to the main session");
     const message = noticeMessage(room.notice.notice);
     if (message) toast[message.tone](message.text);
   }, [room.notice, toast]);
+
+  // Breakout countdown ends when the rooms close; host broadcasts disappear after a while.
+  useEffect(() => {
+    if (!room.breakout?.open) setClosingAt(null);
+  }, [room.breakout?.open]);
+  useEffect(() => {
+    if (!broadcast) return;
+    const id = setTimeout(() => setBroadcast(null), 15000);
+    return () => clearTimeout(id);
+  }, [broadcast]);
 
   // Unread badge on the Chat button.
   useEffect(() => {
@@ -246,6 +267,12 @@ export function MeetingRoom({ join, initialStream, audio, video, startShare, onE
   const self = room.self;
   const isHost = self?.role === "host";
   const moderator = isModerator(self);
+  const whiteboardManager = moderator || room.whiteboard.opened_by === self?.id;
+  const toggleWhiteboard = () => {
+    if (!room.whiteboard.open) client.setWhiteboardOpen(true);
+    else if (whiteboardManager) client.setWhiteboardOpen(false);
+    else toast.info(`The whiteboard was opened by ${room.whiteboard.opened_by_name}`);
+  };
   const pendingPoll = moderator ? undefined : room.polls.find((p) => p.status === "open" && !p.my_votes.length);
   const toggleRecording = () => {
     if (!moderator) return toast.info("Only the host and co-hosts can record this meeting.");
@@ -412,17 +439,50 @@ export function MeetingRoom({ join, initialStream, audio, video, startShare, onE
               othersRecording={recorder.state === "idle" ? room.recording.by : []}
             />
           </div>
-          <VideoStage
-            tiles={tiles}
-            view={view}
-            activeSpeakerId={activeSpeaker}
-            pinnedId={pinnedId}
-            spotlightId={room.spotlightId}
-            hideSelf={hideSelf}
-            hideNonVideo={hideNonVideo}
-            showNames={settings.showNamesOnVideo}
-            onTogglePin={(id) => setPinned((cur) => (cur === id ? null : id))}
+          <BreakoutBanners
+            breakout={room.breakout}
+            myRoomName={room.myRoomName}
+            selfId={self.id}
+            isModerator={moderator}
+            closingAt={closingAt}
+            broadcast={broadcast}
+            helpRequest={helpRequest}
+            now={now}
+            belowToolbar={room.whiteboard.open}
+            onJoin={(position) => {
+              setHelpRequest(null);
+              client.breakoutJoin(position);
+            }}
+            onLeave={() => client.breakoutLeave()}
+            onAskForHelp={() => client.breakoutAskForHelp()}
+            onDismissBroadcast={() => setBroadcast(null)}
+            onDismissHelp={() => setHelpRequest(null)}
           />
+          {room.whiteboard.open ? (
+            <Whiteboard
+              strokes={room.whiteboard.strokes}
+              selfId={self.id}
+              openedByName={room.whiteboard.opened_by_name}
+              canManage={whiteboardManager}
+              title={join.meeting.title}
+              onStroke={(chunk, done) => client.sendStroke(chunk, done)}
+              onErase={(ids) => client.eraseStrokes(ids)}
+              onClear={() => client.clearWhiteboard()}
+              onClose={() => client.setWhiteboardOpen(false)}
+            />
+          ) : (
+            <VideoStage
+              tiles={tiles}
+              view={view}
+              activeSpeakerId={activeSpeaker}
+              pinnedId={pinnedId}
+              spotlightId={room.spotlightId}
+              hideSelf={hideSelf}
+              hideNonVideo={hideNonVideo}
+              showNames={settings.showNamesOnVideo}
+              onTogglePin={(id) => setPinned((cur) => (cur === id ? null : id))}
+            />
+          )}
           {moderator && panel !== "participants" && (
             <WaitingRoomAlert
               waiting={room.waiting}
@@ -459,6 +519,21 @@ export function MeetingRoom({ join, initialStream, audio, video, startShare, onE
             chatAllowed={room.security.allow_chat}
             onSend={(text, to) => client.sendChat(text, to)}
             onClose={() => setPanel(null)}
+          />
+        )}
+        {panel === "breakout" && (
+          <BreakoutPanel
+            breakout={room.breakout}
+            peers={room.peers}
+            myGroup={self.group}
+            onCreate={(count, auto) => client.breakoutCreate(count, auto)}
+            onAssign={(id, position) => client.breakoutAssign(id, position)}
+            onOpen={() => client.breakoutOpen()}
+            onClose={() => client.breakoutClose()}
+            onJoin={(position) => client.breakoutJoin(position)}
+            onLeave={() => client.breakoutLeave()}
+            onBroadcast={(text) => client.breakoutBroadcast(text)}
+            onClosePanel={() => setPanel(null)}
           />
         )}
         {panel === "polls" && (
@@ -515,6 +590,8 @@ export function MeetingRoom({ join, initialStream, audio, video, startShare, onE
         blurOn={room.background.kind === "blur"}
         onToggleBlur={() => void client.setBackground(room.background.kind === "blur" ? { kind: "none" } : { kind: "blur" })}
         onChooseBackground={() => setBackgroundsOpen(true)}
+        whiteboardOpen={room.whiteboard.open}
+        onToggleWhiteboard={toggleWhiteboard}
         captionsOn={captionsVisible}
         onToggleCaptions={toggleCaptions}
         onOpenTranscript={() => setPanel("transcript")}

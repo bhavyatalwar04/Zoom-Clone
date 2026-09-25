@@ -26,6 +26,17 @@ ALL_GROUPS = object()  # sentinel: send to every group
 MODERATOR_ROLES = {"host", "co_host"}
 
 
+def breakout_group(breakout_room_id: int) -> str:
+    return f"breakout-{breakout_room_id}"
+
+
+def breakout_room_id(group: str | None) -> int | None:
+    """The breakout_rooms.id behind a group, or None for the main session."""
+    if group and group.startswith("breakout-"):
+        return int(group.removeprefix("breakout-"))
+    return None
+
+
 @dataclass
 class Peer:
     participant_id: int

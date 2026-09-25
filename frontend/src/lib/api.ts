@@ -1,4 +1,5 @@
 import type {
+  BreakoutHistory,
   ChatMessage,
   JoinResponse,
   Meeting,
@@ -9,6 +10,7 @@ import type {
   ScheduleMeetingInput,
   TranscriptSegment,
   User,
+  WhiteboardStroke,
 } from "./types";
 
 export const API_URL = (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000").replace(/\/$/, "");
@@ -63,6 +65,8 @@ export const api = {
   participants: (code: string) => request<Participant[]>(`/api/meetings/${encodeURIComponent(code)}/participants`),
   messages: (code: string) => request<ChatMessage[]>(`/api/meetings/${encodeURIComponent(code)}/messages`),
   transcript: (code: string) => request<TranscriptSegment[]>(`/api/meetings/${encodeURIComponent(code)}/transcript`),
+  breakouts: (code: string) => request<BreakoutHistory[]>(`/api/meetings/${encodeURIComponent(code)}/breakouts`),
+  whiteboard: (code: string) => request<WhiteboardStroke[]>(`/api/meetings/${encodeURIComponent(code)}/whiteboard`),
   polls: (code: string) => request<PollView[]>(`/api/meetings/${encodeURIComponent(code)}/polls`),
   insights: (code: string) => request<MeetingInsights>(`/api/meetings/${encodeURIComponent(code)}/insights`),
 
