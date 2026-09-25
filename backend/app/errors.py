@@ -22,5 +22,10 @@ class NotMeetingHost(AppError):
         super().__init__(403, "NOT_HOST", "Only the host can perform this action.")
 
 
+class MeetingAccessDenied(AppError):
+    def __init__(self) -> None:
+        super().__init__(403, "FORBIDDEN", "You don't have access to this meeting's details.")
+
+
 async def app_error_handler(_request: Request, exc: AppError) -> JSONResponse:
     return JSONResponse(status_code=exc.status_code, content={"detail": {"code": exc.code, "message": exc.message}})

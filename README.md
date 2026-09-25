@@ -30,9 +30,15 @@ A working clone of the **Zoom Workplace** web app. You can start instant meeting
 - Automatic **reconnect** after a network hiccup
 
 ### Bonus
-- **Host controls**: *Mute all*, mute or *ask to unmute* one person, stop someone's video, **remove a participant**, and **end the meeting for everyone**
+- **Host controls**: *Mute all*, mute or *ask to unmute* one person, stop someone's video, **remove a participant**, and **end the meeting for everyone**. If the host leaves without ending, host controls pass to the person who has been in the meeting longest, as in Zoom.
 - **Responsive layout**: desktop, tablet and mobile (the side panels become full-screen overlays and the toolbar shrinks)
-- **Meetings page**: Upcoming / Previous tabs with a details pane. Past meetings show who attended and the chat transcript.
+- **Meetings page**: Upcoming / Previous tabs with a details pane. Past meetings have Insights, Participants, Chat and Transcript tabs.
+
+### Beyond Zoom's basics (novelty)
+- **Live captions and a searchable transcript.** The host clicks **Show Captions** to turn captions on for everyone. Each participant's browser transcribes *their own* microphone using the Web Speech API, so every line is attributed to the right speaker and no audio is ever sent to our server. Captions appear over the video. Finished lines are saved to the database as the meeting transcript, which you can view live (**More → View full transcript**) and later search, with highlighted matches, and download as `.txt` from the meeting's page. Speech recognition works in Chrome and Edge; in other browsers you still see everyone else's captions.
+- **Meeting insights.** After a meeting, the Insights tab shows its duration, attendance, chat and reaction totals, **talk time per person** (a bar chart with each person's share of speaking time and a hover tooltip), an engagement table (attended time, talk time, messages, reactions, raised hands) and a reaction breakdown. Talk time comes from the same audio-level detection that drives the active-speaker highlight. Reactions, raised hands and screen shares are recorded in an activity log.
+- **Keyboard shortcuts and picture-in-picture.** Zoom's shortcuts: **Alt+A** mute, **Alt+V** video, **Alt+S** share, **Alt+H** chat, **Alt+U** participants, **Alt+Y** raise hand, **Alt+C** captions, **Alt+Q** leave. **Hold Space** to talk while muted (push to talk). **More → Keyboard shortcuts** lists them all. **More → Picture-in-picture** pops the active speaker or shared screen into a floating window; recent Chrome versions also do this automatically when you switch tabs.
+- **Meeting timer and end-time warning.** Elapsed time is shown in the top bar. Scheduled meetings show *"This meeting is scheduled to end in 5 minutes"* near the end, then a notice once the scheduled time has passed.
 
 ---
 
@@ -78,10 +84,16 @@ npm run dev
 ```bash
 cd backend
 pip install -r requirements-dev.txt
-pytest
+pytest                      # 12 tests: REST + WebSocket
+
+cd ../frontend
+npm test                    # 15 unit tests (Vitest)
 ```
 
-The tests cover scheduling, validation, the join rules (passcode, waiting for host, host start token), and the full WebSocket flow: signalling relay, chat persistence, host-only actions, remove, and end meeting.
+- **Backend:** scheduling and validation; the join rules (passcode, waiting for host, host start token); access control on meeting details; ending abandoned meetings; and the full WebSocket flow (signalling relay, chat persistence, host-only actions, remove, end meeting, host handoff, captions/transcript, talk time and insights).
+- **Frontend:** Meeting ID and invite-link parsing, time-zone conversion, formatting, the invitation text, and the end-of-meeting countdown logic.
+
+> The schema changed when captions and insights were added. There are no migrations, so if you ran an earlier version, rebuild your local database with `python -m app.seed --reset`.
 
 ---
 
@@ -109,10 +121,11 @@ The tests cover scheduling, validation, the join rules (passcode, waiting for ho
 | `database.py` | Engine and session, SQLite foreign keys, `UTCDateTime` column type |
 | `models.py` | SQLAlchemy schema (see below) |
 | `schemas.py` | Pydantic request/response models and validation (time zones, emails, passcodes) |
-| `services/meetings.py` | Business logic: create, schedule, list upcoming/recent, join rules, end |
-| `services/rooms.py` | Who is connected to which room (in memory) |
+| `services/meetings.py` | Business logic: create, schedule, list upcoming/recent, join rules, access checks, end, end abandoned meetings |
+| `services/insights.py` | Post-meeting insights, computed with `GROUP BY` queries over chat, transcript and activity rows |
+| `services/rooms.py` | Who is connected to which room (in memory), join order, captions on/off |
 | `routers/meetings.py`, `routers/users.py` | REST endpoints |
-| `routers/realtime.py` | WebSocket endpoint: signalling relay, chat, reactions, host actions |
+| `routers/realtime.py` | WebSocket endpoint: signalling relay, chat, reactions, captions, talk time, host actions, host handoff, and the background sweeper that ends abandoned meetings |
 | `security.py` | Meeting ID / passcode / token generation, HMAC-signed WebSocket tokens |
 | `seed.py` | Sample users and meetings, generated relative to "now" |
 
@@ -125,10 +138,13 @@ The tests cover scheduling, validation, the join rules (passcode, waiting for ho
 | `app/join/` | Standalone "Join Meeting" page |
 | `components/ui/` | Reusable primitives: Button, Modal, Popover, Avatar, Field, Checkbox/Switch, Toast |
 | `components/home/`, `components/meetings/` | Dashboard cards, schedule/join dialogs, meeting details |
-| `components/room/` | Pre-join, meeting room, video stage/tiles, toolbar, participants/chat panels |
+| `components/room/` | Pre-join, meeting room, video stage/tiles, toolbar, participants/chat/transcript panels, captions overlay, timer |
+| `components/meetings/InsightsView.tsx` | Post-meeting insights: stat tiles, talk-time chart, engagement table |
+| `components/transcript/` | Searchable, downloadable transcript, shared by the meeting room and the meeting page |
 | `lib/rtc/room-client.ts` | **All WebRTC and WebSocket logic**, independent of React |
 | `lib/api.ts`, `lib/types.ts` | Typed API client that mirrors the backend schemas |
-| `hooks/` | SWR data hooks, camera preview, active-speaker detection, local settings |
+| `lib/meeting-time.ts` | Meeting timer and end-of-meeting countdown (pure functions, unit tested) |
+| `hooks/` | SWR data hooks, camera preview, active speaker and talk time, speech captions, keyboard shortcuts, picture-in-picture, local settings |
 
 ---
 
@@ -143,6 +159,10 @@ erDiagram
     meetings ||--o{ meeting_participants : "has attendance"
     meetings ||--o{ chat_messages : contains
     meeting_participants ||--o{ chat_messages : sends
+    meetings ||--o{ transcript_segments : "has transcript"
+    meeting_participants ||--o{ transcript_segments : speaks
+    meetings ||--o{ meeting_activities : logs
+    meeting_participants ||--o{ meeting_activities : performs
 
     users {
         int id PK
@@ -190,6 +210,7 @@ erDiagram
         datetime joined_at
         datetime left_at
         bool was_removed
+        int talk_time_ms "reported while speaking"
     }
     chat_messages {
         int id PK
@@ -197,6 +218,21 @@ erDiagram
         int participant_id FK
         text content
         datetime sent_at
+    }
+    transcript_segments {
+        int id PK
+        int meeting_id FK
+        int participant_id FK
+        text content
+        datetime spoken_at "INDEX(meeting_id, spoken_at)"
+    }
+    meeting_activities {
+        int id PK
+        int meeting_id FK
+        int participant_id FK
+        enum kind "reaction | hand_raise | screen_share"
+        string detail "emoji for reactions"
+        datetime created_at "INDEX(meeting_id, kind)"
     }
 ```
 
@@ -208,6 +244,7 @@ erDiagram
 - **Integrity in the database.** Foreign keys use `ON DELETE CASCADE` (SQLite's `PRAGMA foreign_keys` is turned on for every connection). `CHECK` constraints enforce a positive duration and require a start time on scheduled meetings. A `UNIQUE(meeting_id, email)` constraint prevents duplicate invites. Composite indexes cover the dashboard queries (`host_id, scheduled_start`) and live-roster lookups (`meeting_id, left_at`).
 - **Time.** All timestamps are stored in UTC through a custom `UTCDateTime` type, which gives back timezone-aware values and so serialises with `Z`. The organiser's IANA `timezone` is kept so an edit shows the original wall-clock time. The schedule form sends a local time plus a time zone, and the server converts it with `zoneinfo`.
 - **Enums** are stored as readable strings (`'live'`, `'scheduled'`) rather than integers.
+- **Everything that happens in a meeting hangs off the participant who did it.** Chat messages, transcript lines and activities all reference `meeting_participants`, so insights come from `GROUP BY participant_id` queries rather than stored totals. `meeting_activities` is an append-only event log (kind + detail + time). New kinds of engagement can be added without new tables, and the totals can always be recomputed. The one stored aggregate is `talk_time_ms`: speaking time arrives as a stream of small increments, and a row per 250 ms sample would be wasteful.
 
 ---
 
@@ -224,18 +261,23 @@ erDiagram
 | `PUT /api/meetings/{id}` / `DELETE /api/meetings/{id}` | Edit / delete (host only) |
 | `GET /api/meetings/{id}/lookup` | Public check that a meeting exists (join flow) |
 | `POST /api/meetings/{id}/join` | Checks the passcode / host start token / waiting-for-host rule, records the participant, returns a signed WebSocket token |
-| `GET /api/meetings/{id}/participants` / `messages` | Attendance and chat history |
+| `GET /api/meetings/{id}/participants` / `messages` / `transcript` | Attendance, chat history, transcript |
+| `GET /api/meetings/{id}/insights` | Post-meeting insights (talk time, engagement, reactions) |
 | `WS /ws/meetings/{id}?token=…` | Signalling and live meeting events |
 
 Errors use one shape, `{"detail": {"code": "WAITING_FOR_HOST", "message": "…"}}`, so the UI can branch on `code`.
+
+**Access control.** Only people involved in a meeting (host, invitee or attendee) can see its details, passcode, attendance, chat, transcript and insights. Everyone else gets `403 FORBIDDEN`. The public `lookup` endpoint confirms a Meeting ID exists but never reveals the passcode, so knowing an ID is not enough to get in.
 
 ### How a call works
 1. `POST /join` returns an HMAC-signed token tied to the participant and meeting.
 2. The browser opens the WebSocket. The server replies with `welcome` (current peers and chat history) and tells everyone else `peer-joined`.
 3. **The newcomer sends an SDP offer to each existing peer**, and they answer. Because only the newcomer offers, two peers never offer to each other at the same time.
 4. Each connection starts with one audio and one video transceiver. Muting, turning the camera off, switching devices and screen sharing are all a `replaceTrack`, so no renegotiation is ever needed.
-5. The server relays `signal` messages by participant id and never touches the media. Chat, reactions, mic/camera state and host commands go over the same socket. The server checks host commands against the participant's role.
-6. When the last person leaves, the meeting is marked `ended` after a short grace period, so a page refresh doesn't end it.
+5. The server relays `signal` messages by participant id and never touches the media. Chat, reactions, captions, talk time, mic/camera state and host commands go over the same socket. The server checks host commands against the participant's role.
+6. Each browser handles incoming messages **strictly one at a time, in order**. Several steps wait on WebRTC calls, and letting them overlap (for example a `peer-left` arriving while that peer's offer is still being processed) would act on a connection that had already been closed.
+7. If the host disconnects without ending the meeting, the participant who joined earliest is promoted (`host-changed`), both in memory and in the database.
+8. When the last person leaves, the meeting is marked `ended` after a short grace period, so a page refresh doesn't end it. A background sweep also ends "live" meetings nobody is connected to: for example, when a tab closed between the join request and the WebSocket connecting, or after a server restart.
 
 ---
 
@@ -248,6 +290,7 @@ Errors use one shape, `{"detail": {"code": "WAITING_FOR_HOST", "message": "…"}
 - **Single backend process.** Live room state (who is connected) is kept in memory, so the API must run as one worker. Scaling out would move it to Redis pub/sub.
 - **Not implemented:** cloud recording (the button shows a notice), persistent Team Chat, whiteboards, waiting room, breakout rooms and recurring meetings.
 - **Camera and microphone need a secure context.** Browsers only allow them on `https://` or `localhost`.
+- **Captions.** Speech recognition uses the browser's built-in Web Speech API (Chrome and Edge; Chrome uses Google's speech service). If you test with two tabs on one computer, both tabs hear the same microphone, so captions appear twice. Talk time is measured by each participant's own browser and reported to the server.
 - Zoom's look is recreated with its public colours, layout and interaction patterns. No Zoom assets or trademarked logos are included, and the wordmark is plain styled text.
 
 ---

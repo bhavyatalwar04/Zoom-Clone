@@ -2,10 +2,13 @@
 
 import clsx from "clsx";
 import {
+  Captions,
   Check,
   ChevronUp,
   CircleDot,
+  FileText,
   Hand,
+  Keyboard,
   LayoutGrid,
   Link2,
   Maximize,
@@ -14,6 +17,7 @@ import {
   MicOff,
   MonitorUp,
   MoreHorizontal,
+  PictureInPicture2,
   SmilePlus,
   UserPlus,
   Users,
@@ -28,6 +32,8 @@ export const REACTIONS = ["👏", "👍", "❤️", "😂", "😮", "🎉"];
 interface ControlButtonProps {
   icon: React.ReactNode;
   label: string;
+  /** Keyboard shortcut shown in the tooltip, e.g. "Alt+A". */
+  shortcut?: string;
   onClick: () => void;
   active?: boolean;
   badge?: number | string | null;
@@ -38,11 +44,13 @@ interface ControlButtonProps {
   caret?: { onClick: () => void; ref: React.RefObject<HTMLButtonElement | null>; label: string };
 }
 
-function ControlButton({ icon, label, onClick, active, badge, badgeTone = "alert", className, caret }: ControlButtonProps) {
+function ControlButton({ icon, label, shortcut, onClick, active, badge, badgeTone = "alert", className, caret }: ControlButtonProps) {
   return (
     <div className={clsx("relative flex items-stretch", className)}>
       <button
         onClick={onClick}
+        aria-label={label}
+        title={shortcut ? ` ()` : label}
         className={clsx(
           "flex min-w-[52px] flex-col items-center justify-center gap-1 rounded-lg px-2 py-1.5 text-[11px] text-room-text transition-colors hover:bg-room-hover sm:min-w-[68px]",
           active && "text-white",
@@ -149,10 +157,18 @@ export interface ToolbarProps {
   onInvite: () => void;
   onCopyLink: () => void;
   onRecord: () => void;
+  captionsOn: boolean;
+  onToggleCaptions: () => void;
+  onOpenTranscript: () => void;
+  pipSupported: boolean;
+  onPictureInPicture: () => void;
+  onShowShortcuts: () => void;
   onSelectMic: (deviceId: string) => void;
   onSelectCamera: (deviceId: string) => void;
   /** When false, attendees leave immediately instead of confirming in a popover. */
   confirmLeave: boolean;
+  /** Incremented by the Alt+Q shortcut: open the leave menu (or leave right away). */
+  leaveRequest: number;
   onLeave: () => void;
   onEndForAll: () => void;
 }
@@ -165,6 +181,16 @@ export function Toolbar(props: ToolbarProps) {
   const moreBtn = useRef<HTMLDivElement>(null);
   const leaveBtn = useRef<HTMLButtonElement>(null);
   const close = () => setMenu(null);
+  const requestLeave = () => (props.isHost || props.confirmLeave ? setMenu("leave") : props.onLeave());
+
+  // Alt+Q from the keyboard shortcuts.
+  const leaveRequest = useRef(props.leaveRequest);
+  useEffect(() => {
+    if (props.leaveRequest === leaveRequest.current) return;
+    leaveRequest.current = props.leaveRequest;
+    requestLeave();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [props.leaveRequest]);
   const toggle = (m: NonNullable<typeof menu>) => setMenu((cur) => (cur === m ? null : m));
   /** Menu item handler: close the menu, then run the action. */
   const pick = (action: () => void) => () => {
@@ -182,12 +208,14 @@ export function Toolbar(props: ToolbarProps) {
       <div className="flex items-center">
         <ControlButton
           label={props.audio ? "Mute" : "Unmute"}
+          shortcut="Alt+A"
           onClick={props.onToggleAudio}
           icon={props.audio ? <Mic className="h-6 w-6" /> : <MicOff className="h-6 w-6 text-[#ff4d4d]" />}
           caret={{ onClick: () => toggle("mic"), ref: micCaret, label: "Audio options" }}
         />
         <ControlButton
           label={props.video ? "Stop Video" : "Start Video"}
+          shortcut="Alt+V"
           onClick={props.onToggleVideo}
           icon={props.video ? <Video className="h-6 w-6" /> : <VideoOff className="h-6 w-6 text-[#ff4d4d]" />}
           caret={{ onClick: () => toggle("cam"), ref: camCaret, label: "Video options" }}
@@ -197,6 +225,7 @@ export function Toolbar(props: ToolbarProps) {
       <div className="flex items-center">
         <ControlButton
           label="Participants"
+          shortcut="Alt+U"
           onClick={() => props.onTogglePanel("participants")}
           active={props.panel === "participants"}
           icon={<Users className="h-6 w-6" />}
@@ -205,6 +234,7 @@ export function Toolbar(props: ToolbarProps) {
         />
         <ControlButton
           label="Chat"
+          shortcut="Alt+H"
           onClick={() => props.onTogglePanel("chat")}
           active={props.panel === "chat"}
           icon={<MessageSquare className="h-6 w-6" />}
@@ -212,6 +242,7 @@ export function Toolbar(props: ToolbarProps) {
         />
         <ControlButton
           label={props.sharing ? "Stop Share" : "Share Screen"}
+          shortcut="Alt+S"
           onClick={props.onToggleShare}
           className="hidden md:flex"
           icon={
@@ -220,7 +251,15 @@ export function Toolbar(props: ToolbarProps) {
             </span>
           }
         />
-        <ControlButton label="Record" onClick={props.onRecord} className="hidden lg:flex" icon={<CircleDot className="h-6 w-6" />} />
+        <ControlButton label="Record" onClick={props.onRecord} className="hidden xl:flex" icon={<CircleDot className="h-6 w-6" />} />
+        <ControlButton
+          label={props.captionsOn ? "Hide Captions" : "Show Captions"}
+          shortcut="Alt+C"
+          onClick={props.onToggleCaptions}
+          active={props.captionsOn}
+          className="hidden lg:flex"
+          icon={<Captions className={clsx("h-6 w-6", props.captionsOn && "text-[#6ea1ff]")} />}
+        />
         <div ref={reactionsBtn}>
           <ControlButton label="Reactions" onClick={() => toggle("reactions")} icon={<SmilePlus className="h-6 w-6" />} />
         </div>
@@ -232,7 +271,8 @@ export function Toolbar(props: ToolbarProps) {
       <div className="flex items-center pr-1">
         <button
           ref={leaveBtn}
-          onClick={() => (props.isHost || props.confirmLeave ? toggle("leave") : props.onLeave())}
+          onClick={() => (menu === "leave" ? close() : requestLeave())}
+          title="Alt+Q"
           className="h-8 rounded-lg bg-zoom-red px-4 text-sm font-bold text-white hover:bg-zoom-red-hover sm:h-9"
         >
           {props.isHost ? "End" : "Leave"}
@@ -309,6 +349,20 @@ export function Toolbar(props: ToolbarProps) {
         </MenuItem>
         <MenuItem tone="dark" icon={<Maximize className="h-4 w-4" />} onClick={pick(toggleFullscreen)}>
           Enter / exit full screen
+        </MenuItem>
+        <MenuItem tone="dark" className="lg:hidden" icon={<Captions className="h-4 w-4" />} onClick={pick(props.onToggleCaptions)}>
+          {props.captionsOn ? "Hide captions" : "Show captions"}
+        </MenuItem>
+        <MenuItem tone="dark" icon={<FileText className="h-4 w-4" />} onClick={pick(props.onOpenTranscript)}>
+          View full transcript
+        </MenuItem>
+        {props.pipSupported && (
+          <MenuItem tone="dark" icon={<PictureInPicture2 className="h-4 w-4" />} onClick={pick(props.onPictureInPicture)}>
+            Picture-in-picture
+          </MenuItem>
+        )}
+        <MenuItem tone="dark" icon={<Keyboard className="h-4 w-4" />} onClick={pick(props.onShowShortcuts)}>
+          Keyboard shortcuts
         </MenuItem>
       </Popover>
 

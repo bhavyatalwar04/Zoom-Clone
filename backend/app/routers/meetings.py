@@ -8,14 +8,17 @@ from ..schemas import (
     InstantMeetingCreate,
     JoinRequest,
     JoinResponse,
+    MeetingInsights,
     MeetingLookup,
     MeetingOut,
     ParticipantOut,
     ScheduledMeetingCreate,
     ScheduledMeetingUpdate,
+    TranscriptSegmentOut,
 )
 from ..security import create_ws_token
 from ..services import meetings as service
+from ..services.insights import build_insights
 
 router = APIRouter(prefix="/api/meetings", tags=["meetings"])
 
@@ -43,7 +46,7 @@ def schedule_meeting(data: ScheduledMeetingCreate, db: DbSession, user: CurrentU
 
 @router.get("/{code}", response_model=MeetingOut)
 def get_meeting(code: str, db: DbSession, user: CurrentUser):
-    return service.to_meeting_out(service.get_meeting(db, code), user)
+    return service.to_meeting_out(service.get_accessible_meeting(db, code, user), user)
 
 
 @router.put("/{code}", response_model=MeetingOut)
@@ -80,10 +83,20 @@ def join_meeting(code: str, data: JoinRequest, db: DbSession, user: CurrentUser)
 
 
 @router.get("/{code}/participants", response_model=list[ParticipantOut])
-def list_participants(code: str, db: DbSession, _user: CurrentUser):
-    return service.get_meeting(db, code).participants
+def list_participants(code: str, db: DbSession, user: CurrentUser):
+    return service.get_accessible_meeting(db, code, user).participants
 
 
 @router.get("/{code}/messages", response_model=list[ChatMessageOut])
-def list_messages(code: str, db: DbSession, _user: CurrentUser):
-    return [service.to_chat_out(m) for m in service.get_meeting(db, code).messages]
+def list_messages(code: str, db: DbSession, user: CurrentUser):
+    return [service.to_chat_out(m) for m in service.get_accessible_meeting(db, code, user).messages]
+
+
+@router.get("/{code}/transcript", response_model=list[TranscriptSegmentOut])
+def get_transcript(code: str, db: DbSession, user: CurrentUser):
+    return [service.to_transcript_out(s) for s in service.get_accessible_meeting(db, code, user).transcript]
+
+
+@router.get("/{code}/insights", response_model=MeetingInsights)
+def get_insights(code: str, db: DbSession, user: CurrentUser):
+    return build_insights(db, service.get_accessible_meeting(db, code, user))

@@ -14,13 +14,16 @@ from sqlalchemy.orm import Session
 from .config import get_settings
 from .database import Base, SessionLocal, engine
 from .models import (
+    ActivityKind,
     ChatMessage,
     Meeting,
+    MeetingActivity,
     MeetingInvitee,
     MeetingParticipant,
     MeetingStatus,
     MeetingType,
     ParticipantRole,
+    TranscriptSegment,
     User,
 )
 from .security import generate_meeting_code, generate_passcode, generate_start_token
@@ -136,14 +139,63 @@ def seed(db: Session) -> None:
                 MeetingParticipant(display_name="Guest (Client)", role=ParticipantRole.ATTENDEE,
                                    joined_at=start + timedelta(minutes=5), left_at=end - timedelta(minutes=5))
             )
+        # Talk time: the host speaks the most, everyone else a random share of the meeting.
+        for participant in meeting.participants:
+            share = 0.35 if participant.role == ParticipantRole.HOST else rng.uniform(0.05, 0.25)
+            participant.talk_time_ms = int(minutes * 60_000 * share)
         db.add(meeting)
         db.flush()
         for offset, line in enumerate(chat_lines[: rng.randint(2, len(chat_lines))]):
             sender = meeting.participants[offset % len(meeting.participants)]
             db.add(ChatMessage(meeting_id=meeting.id, participant_id=sender.id, content=line,
                                sent_at=start + timedelta(minutes=2 + offset * 3)))
+        _seed_activity(db, rng, meeting, start, minutes)
+        _seed_transcript(db, meeting, start, title)
 
     db.commit()
+
+
+REACTIONS = ["👏", "👍", "❤️", "😂", "😮", "🎉"]
+
+TRANSCRIPTS = {
+    "Architecture Discussion": [
+        "Let's start with the current request flow and where the latency comes from.",
+        "Most of the time is spent waiting on the database for the dashboard queries.",
+        "Could we add an index on host and start time for the upcoming meetings list?",
+        "Yes, and we can cache the contact list since it rarely changes.",
+        "Great, I'll write that up and share the proposal by Friday.",
+    ],
+    "Bug Bash": [
+        "Thanks for joining, the goal today is to break the new scheduling flow.",
+        "I found that editing a meeting in a different time zone shifts it by an hour.",
+        "Good catch, can you file that with the steps to reproduce?",
+        "The join link works on mobile but the preview camera stays on after leaving.",
+        "Let's prioritise the time zone bug for this sprint.",
+    ],
+}
+
+
+def _seed_activity(db: Session, rng: random.Random, meeting: Meeting, start: datetime, minutes: int) -> None:
+    for participant in meeting.participants:
+        for _ in range(rng.randint(0, 4)):
+            db.add(MeetingActivity(meeting_id=meeting.id, participant_id=participant.id,
+                                   kind=ActivityKind.REACTION, detail=rng.choice(REACTIONS),
+                                   created_at=start + timedelta(minutes=rng.randint(1, max(1, minutes - 1)))))
+        if rng.random() < 0.4:
+            db.add(MeetingActivity(meeting_id=meeting.id, participant_id=participant.id,
+                                   kind=ActivityKind.HAND_RAISE,
+                                   created_at=start + timedelta(minutes=rng.randint(1, max(1, minutes - 1)))))
+    presenter = meeting.participants[0]
+    db.add(MeetingActivity(meeting_id=meeting.id, participant_id=presenter.id,
+                           kind=ActivityKind.SCREEN_SHARE, created_at=start + timedelta(minutes=3)))
+
+
+def _seed_transcript(db: Session, meeting: Meeting, start: datetime, title: str) -> None:
+    speakers = [p for p in meeting.participants if p.user_id is not None]
+    for index, line in enumerate(TRANSCRIPTS.get(title, [])):
+        speaker = speakers[index % len(speakers)]
+        db.add(TranscriptSegment(meeting_id=meeting.id, participant_id=speaker.id, content=line,
+                                 spoken_at=start + timedelta(minutes=1 + index * 2)))
 
 
 def seed_if_empty() -> bool:

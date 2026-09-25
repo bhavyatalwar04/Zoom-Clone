@@ -5,10 +5,14 @@
     meetings ──< meeting_invitees
     meetings ──< meeting_participants ──< chat_messages
     meetings ──< chat_messages
+    meeting_participants ──< transcript_segments   (live captions, saved as a transcript)
+    meeting_participants ──< meeting_activities    (reactions, raised hands, screen shares)
 
 A *meeting* is the thing you schedule or start (it owns the Meeting ID, passcode and settings).
 A *participant* row is one attendance of a meeting: it is created every time someone joins
 and closed (left_at) when they leave, which gives us the meeting history for "Recent meetings".
+Chat, transcript and activity rows all hang off the participant who produced them, which is
+what the post-meeting insights aggregate over.
 """
 
 import enum
@@ -44,6 +48,12 @@ class MeetingStatus(str, enum.Enum):
 class ParticipantRole(str, enum.Enum):
     HOST = "host"
     ATTENDEE = "attendee"
+
+
+class ActivityKind(str, enum.Enum):
+    REACTION = "reaction"
+    HAND_RAISE = "hand_raise"
+    SCREEN_SHARE = "screen_share"
 
 
 def _enum(enum_cls: type[enum.Enum], name: str) -> Enum:
@@ -121,6 +131,12 @@ class Meeting(Base):
         passive_deletes=True,
         order_by="ChatMessage.sent_at",
     )
+    transcript: Mapped[list["TranscriptSegment"]] = relationship(
+        back_populates="meeting",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="TranscriptSegment.spoken_at",
+    )
 
 
 class MeetingInvitee(Base):
@@ -155,6 +171,8 @@ class MeetingParticipant(Base):
     joined_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
     left_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
     was_removed: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Accumulated while this person's microphone detected speech (reported by their client).
+    talk_time_ms: Mapped[int] = mapped_column(Integer, default=0)
 
     meeting: Mapped[Meeting] = relationship(back_populates="participants")
     user: Mapped[User | None] = relationship()
@@ -174,4 +192,41 @@ class ChatMessage(Base):
     sent_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
 
     meeting: Mapped[Meeting] = relationship(back_populates="messages")
+    participant: Mapped[MeetingParticipant] = relationship()
+
+
+class TranscriptSegment(Base):
+    """One finalised caption line: who said what, and when."""
+
+    __tablename__ = "transcript_segments"
+    __table_args__ = (Index("ix_transcript_meeting_spoken", "meeting_id", "spoken_at"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    meeting_id: Mapped[int] = mapped_column(ForeignKey("meetings.id", ondelete="CASCADE"))
+    participant_id: Mapped[int] = mapped_column(
+        ForeignKey("meeting_participants.id", ondelete="CASCADE"), index=True
+    )
+    content: Mapped[str] = mapped_column(Text)
+    spoken_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+
+    meeting: Mapped[Meeting] = relationship(back_populates="transcript")
+    participant: Mapped[MeetingParticipant] = relationship()
+
+
+class MeetingActivity(Base):
+    """Engagement events during a meeting (a log, so insights can be recomputed any way we like)."""
+
+    __tablename__ = "meeting_activities"
+    __table_args__ = (Index("ix_activities_meeting_kind", "meeting_id", "kind"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    meeting_id: Mapped[int] = mapped_column(ForeignKey("meetings.id", ondelete="CASCADE"))
+    participant_id: Mapped[int] = mapped_column(
+        ForeignKey("meeting_participants.id", ondelete="CASCADE"), index=True
+    )
+    kind: Mapped[ActivityKind] = mapped_column(_enum(ActivityKind, "activity_kind"))
+    # The emoji for reactions; empty for other kinds.
+    detail: Mapped[str | None] = mapped_column(String(16))
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+
     participant: Mapped[MeetingParticipant] = relationship()

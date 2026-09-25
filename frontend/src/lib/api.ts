@@ -2,9 +2,11 @@ import type {
   ChatMessage,
   JoinResponse,
   Meeting,
+  MeetingInsights,
   MeetingLookup,
   Participant,
   ScheduleMeetingInput,
+  TranscriptSegment,
   User,
 } from "./types";
 
@@ -59,6 +61,8 @@ export const api = {
   meeting: (code: string) => request<Meeting>(`/api/meetings/${encodeURIComponent(code)}`),
   participants: (code: string) => request<Participant[]>(`/api/meetings/${encodeURIComponent(code)}/participants`),
   messages: (code: string) => request<ChatMessage[]>(`/api/meetings/${encodeURIComponent(code)}/messages`),
+  transcript: (code: string) => request<TranscriptSegment[]>(`/api/meetings/${encodeURIComponent(code)}/transcript`),
+  insights: (code: string) => request<MeetingInsights>(`/api/meetings/${encodeURIComponent(code)}/insights`),
 
   createInstant: (data: { title?: string; host_video_on?: boolean } = {}) =>
     request<Meeting>("/api/meetings/instant", { method: "POST", body: json(data) }),

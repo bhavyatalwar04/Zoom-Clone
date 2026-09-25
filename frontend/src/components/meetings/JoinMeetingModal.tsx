@@ -41,6 +41,11 @@ export function JoinMeetingModal({ open, onClose, mode = "join" }: JoinMeetingMo
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
+  // The dialog can open before the current user has loaded; fill in their name then.
+  useEffect(() => {
+    if (open && me) setName((current) => current || settings.displayName || me.full_name);
+  }, [open, me, settings.displayName]);
+
   const { code, passcode } = parseMeetingInput(meetingInput);
   const canJoin = code.length >= 9 && name.trim().length > 0;
 

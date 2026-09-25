@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 
-const SAMPLE_MS = 250;
+export const SPEAKER_SAMPLE_MS = 250;
 const SPEAKING_LEVEL = 0.035; // RMS threshold on a 0..1 scale
 const HOLD_MS = 1200; // keep the highlight briefly after someone stops talking
 
@@ -14,9 +14,15 @@ interface Source {
 
 /**
  * Detects who is talking by measuring the loudness of each audio track (Web Audio API).
- * Returns the id of the loudest speaker above a threshold, or null.
+ * Returns the id of the loudest speaker above a threshold, or null. `onSample` receives everyone
+ * speaking in each sample (every SPEAKER_SAMPLE_MS), which is used to measure talk time.
  */
-export function useActiveSpeaker(tracks: Map<number, MediaStreamTrack | null>): number | null {
+export function useActiveSpeaker(
+  tracks: Map<number, MediaStreamTrack | null>,
+  onSample?: (speakingIds: number[]) => void,
+): number | null {
+  const onSampleRef = useRef(onSample);
+  onSampleRef.current = onSample;
   const [speaker, setSpeaker] = useState<number | null>(null);
   const ctxRef = useRef<AudioContext | null>(null);
   const sources = useRef(new Map<number, Source>());
@@ -49,18 +55,21 @@ export function useActiveSpeaker(tracks: Map<number, MediaStreamTrack | null>): 
     const buffer = new Float32Array(512);
     const timer = setInterval(() => {
       let loudest: { id: number; level: number } | null = null;
+      const speaking: number[] = [];
       for (const [id, { analyser }] of sources.current) {
         analyser.getFloatTimeDomainData(buffer);
         let sum = 0;
         for (const v of buffer) sum += v * v;
         const level = Math.sqrt(sum / buffer.length);
+        if (level > SPEAKING_LEVEL) speaking.push(id);
         if (level > SPEAKING_LEVEL && (!loudest || level > loudest.level)) loudest = { id, level };
       }
+      onSampleRef.current?.(speaking);
       const now = Date.now();
       if (loudest) lastHeard.current = { id: loudest.id, at: now };
       const current = lastHeard.current && now - lastHeard.current.at < HOLD_MS ? lastHeard.current.id : null;
       setSpeaker((prev) => (prev === current ? prev : current));
-    }, SAMPLE_MS);
+    }, SPEAKER_SAMPLE_MS);
     return () => clearInterval(timer);
   }, []);
 

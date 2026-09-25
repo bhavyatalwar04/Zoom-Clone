@@ -132,6 +132,8 @@ class MeetingLookup(BaseModel):
     status: MeetingStatus
     meeting_type: MeetingType
     scheduled_start: datetime | None
+    duration_minutes: int
+    started_at: datetime | None
     requires_passcode: bool
     join_before_host: bool
 
@@ -182,6 +184,49 @@ class ChatMessageOut(BaseModel):
     sender_name: str
     content: str
     sent_at: datetime
+
+
+class TranscriptSegmentOut(BaseModel):
+    id: int
+    participant_id: int
+    speaker_name: str
+    content: str
+    spoken_at: datetime
+
+
+# --------------------------------------------------------------------------- insights
+
+
+class ParticipantInsight(BaseModel):
+    """Everything one person did in a meeting (rejoins are merged by display name)."""
+
+    display_name: str
+    is_host: bool
+    attended_minutes: int
+    talk_seconds: int
+    talk_share: float  # 0..1 of all talk time in the meeting
+    messages: int
+    reactions: int
+    hand_raises: int
+    transcript_lines: int
+
+
+class EmojiCount(BaseModel):
+    emoji: str
+    count: int
+
+
+class MeetingInsights(BaseModel):
+    duration_minutes: int
+    participant_count: int
+    total_talk_seconds: int
+    total_messages: int
+    total_reactions: int
+    total_hand_raises: int
+    screen_shares: int
+    transcript_lines: int
+    reactions_by_emoji: list[EmojiCount]
+    participants: list[ParticipantInsight]
 
 
 class ErrorDetail(BaseModel):

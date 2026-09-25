@@ -1,4 +1,4 @@
-import type { ChatMessage, ParticipantRole } from "../types";
+import type { ChatMessage, ParticipantRole, TranscriptSegment } from "../types";
 
 /**
  * RoomClient: everything that happens inside a meeting, framework independent.
@@ -8,6 +8,10 @@ import type { ChatMessage, ParticipantRole } from "../types";
  * - The newcomer always sends the offers, so two peers never offer to each other at once.
  * - Every connection is created with one audio and one video transceiver up front, so muting,
  *   turning the camera off or sharing the screen is only ever a `replaceTrack` - no renegotiation.
+ *
+ * - Server messages are handled strictly one at a time, in arrival order (see `inbox`): several
+ *   of them await WebRTC calls, and interleaving e.g. a `peer-left` with that peer's offer would
+ *   operate on a connection that was closed underneath it.
  *
  * React reads state through `subscribe` / `getSnapshot` (useSyncExternalStore). Snapshots are
  * immutable: every change produces a new object.
@@ -34,6 +38,15 @@ export interface Reaction {
   emoji: string;
 }
 
+/** The latest (possibly still changing) caption line of one speaker. */
+export interface LiveCaption {
+  peerId: number;
+  name: string;
+  text: string;
+  final: boolean;
+  at: number;
+}
+
 export type ConnectionStatus = "connecting" | "connected" | "reconnecting" | "closed";
 export type EndReason = "left" | "ended" | "removed" | "error";
 
@@ -41,6 +54,8 @@ export type RoomNotice =
   | { kind: "force-mute" }
   | { kind: "ask-unmute" }
   | { kind: "force-stop-video" }
+  | { kind: "now-host" }
+  | { kind: "captions"; enabled: boolean }
   | { kind: "error"; message: string }
   | { kind: "media-error"; message: string };
 
@@ -57,6 +72,11 @@ export interface RoomSnapshot {
   peers: RemotePeer[];
   messages: ChatMessage[];
   reactions: Reaction[];
+  /** Captions are switched on for the whole meeting by the host. */
+  captionsEnabled: boolean;
+  liveCaptions: LiveCaption[];
+  /** Finalised captions, i.e. the meeting transcript so far. */
+  transcript: TranscriptSegment[];
   notice: { id: number; notice: RoomNotice } | null;
 }
 
@@ -67,7 +87,17 @@ interface PeerLink {
 }
 
 type ServerMessage =
-  | { type: "welcome"; self: PeerInfo; peers: PeerInfo[]; messages: ChatMessage[] }
+  | {
+      type: "welcome";
+      self: PeerInfo;
+      peers: PeerInfo[];
+      messages: ChatMessage[];
+      transcript: TranscriptSegment[];
+      captions_enabled: boolean;
+    }
+  | { type: "host-changed"; id: number }
+  | { type: "captions-state"; enabled: boolean }
+  | { type: "caption"; from: number; name: string; text: string; final: boolean; segment?: TranscriptSegment }
   | { type: "peer-joined"; peer: PeerInfo }
   | { type: "peer-updated"; peer: PeerInfo }
   | { type: "peer-left"; id: number }
@@ -94,6 +124,8 @@ const DEFAULT_ICE_SERVERS: RTCIceServer[] = [
 const REACTION_TTL_MS = 8000;
 const PING_INTERVAL_MS = 20000;
 const MAX_RECONNECT_ATTEMPTS = 5;
+const CAPTION_TTL_MS = 5500;
+const INTERIM_CAPTION_INTERVAL_MS = 250;
 
 export class RoomClient {
   private ws: WebSocket | null = null;
@@ -105,6 +137,10 @@ export class RoomClient {
   private disposed = false;
   private reactionKey = 0;
   private noticeId = 0;
+  private lastInterimCaption = 0;
+  private mediaRequested = false;
+  /** Tail of the message queue: each server message is handled after the previous one. */
+  private inbox: Promise<void> = Promise.resolve();
 
   private audioTrack: MediaStreamTrack | null;
   private cameraTrack: MediaStreamTrack | null;
@@ -130,6 +166,9 @@ export class RoomClient {
       peers: [],
       messages: [],
       reactions: [],
+      captionsEnabled: false,
+      liveCaptions: [],
+      transcript: [],
       notice: null,
     };
   }
@@ -160,6 +199,12 @@ export class RoomClient {
 
   connect() {
     if (this.disposed) return;
+    if (!this.mediaRequested) {
+      this.mediaRequested = true;
+      // Joined before the preview finished opening the camera / mic: open them ourselves.
+      if (this.options.videoEnabled && !this.cameraTrack) void this.setVideoEnabled(true);
+      if (this.options.audioEnabled && !this.audioTrack) void this.setAudioEnabled(true);
+    }
     const url = new URL(this.options.wsUrl);
     url.searchParams.set("audio", String(this.audioEnabled));
     url.searchParams.set("video", String(!!this.cameraTrack));
@@ -171,11 +216,16 @@ export class RoomClient {
       this.pingTimer = setInterval(() => this.send({ type: "ping" }), PING_INTERVAL_MS);
     };
     ws.onmessage = (event) => {
+      if (this.ws !== ws) return;
+      let msg: ServerMessage;
       try {
-        void this.handleMessage(JSON.parse(event.data) as ServerMessage);
-      } catch (err) {
-        console.error("Bad message from server", err);
+        msg = JSON.parse(event.data);
+      } catch {
+        return console.error("Bad message from server", event.data);
       }
+      this.inbox = this.inbox
+        .then(() => this.handleMessage(msg))
+        .catch((err) => console.warn(`Failed to handle "${msg.type}"`, err));
     };
     ws.onclose = (event) => {
       if (this.ws !== ws) return; // an older socket we already replaced
@@ -227,6 +277,8 @@ export class RoomClient {
           status: "connected",
           self: { ...msg.self, audio: this.audioEnabled, video: !!this.cameraTrack, screen: !!this.screenTrack },
           messages: msg.messages,
+          transcript: msg.transcript,
+          captionsEnabled: msg.captions_enabled,
           peers: msg.peers.map((p) => ({ ...p, stream: null, connection: "new" })),
         });
         // Re-announce our real state (e.g. screen share survived a reconnect).
@@ -242,6 +294,22 @@ export class RoomClient {
       }
       case "peer-updated":
         this.updatePeer(msg.peer.id, msg.peer);
+        break;
+      case "host-changed":
+        if (msg.id === this.snapshot.self?.id) {
+          this.update({ self: { ...this.snapshot.self, role: "host" } });
+          this.notify({ kind: "now-host" });
+        } else {
+          this.updatePeer(msg.id, { role: "host" });
+        }
+        break;
+      case "captions-state":
+        this.update({ captionsEnabled: msg.enabled, liveCaptions: msg.enabled ? this.snapshot.liveCaptions : [] });
+        this.notify({ kind: "captions", enabled: msg.enabled });
+        break;
+      case "caption":
+        this.showCaption(msg.from, msg.name, msg.text, msg.final);
+        if (msg.segment) this.update({ transcript: [...this.snapshot.transcript, msg.segment] });
         break;
       case "peer-left":
         this.closeLink(msg.id);
@@ -523,5 +591,37 @@ export class RoomClient {
   hostAction(action: "mute" | "ask-unmute" | "stop-video" | "remove", target: number): void;
   hostAction(action: string, target?: number) {
     this.send({ type: `host:${action}`, target });
+  }
+
+  // ------------------------------------------------------------------ captions & insights
+
+  /** Host only: turn live captions on or off for everyone. */
+  setCaptionsEnabled(enabled: boolean) {
+    this.send({ type: "host:captions", enabled });
+  }
+
+  /** Publish a caption of my own speech. Interim (still changing) results are rate limited. */
+  sendCaption(text: string, final: boolean) {
+    if (!this.snapshot.captionsEnabled || !text.trim()) return;
+    const now = Date.now();
+    if (!final && now - this.lastInterimCaption < INTERIM_CAPTION_INTERVAL_MS) return;
+    this.lastInterimCaption = final ? 0 : now;
+    this.send({ type: "caption", text, final });
+  }
+
+  /** Report how long I spoke since the last report (feeds the post-meeting insights). */
+  reportTalkTime(ms: number) {
+    if (ms > 0) this.send({ type: "talk-time", ms: Math.round(ms) });
+  }
+
+  private showCaption(peerId: number, name: string, text: string, final: boolean) {
+    const caption: LiveCaption = { peerId, name, text, final, at: Date.now() };
+    const others = this.snapshot.liveCaptions.filter((c) => c.peerId !== peerId);
+    // Keep the two most recent speakers on screen, like Zoom's caption area.
+    this.update({ liveCaptions: [...others, caption].slice(-2) });
+    setTimeout(() => {
+      const fresh = this.snapshot.liveCaptions.filter((c) => Date.now() - c.at < CAPTION_TTL_MS);
+      if (fresh.length !== this.snapshot.liveCaptions.length) this.update({ liveCaptions: fresh });
+    }, CAPTION_TTL_MS);
   }
 }

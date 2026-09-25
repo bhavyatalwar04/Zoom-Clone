@@ -46,6 +46,8 @@ export interface MeetingLookup {
   status: MeetingStatus;
   meeting_type: MeetingType;
   scheduled_start: string | null;
+  duration_minutes: number;
+  started_at: string | null;
   requires_passcode: boolean;
   join_before_host: boolean;
 }
@@ -89,4 +91,37 @@ export interface ChatMessage {
   sender_name: string;
   content: string;
   sent_at: string;
+}
+
+export interface TranscriptSegment {
+  id: number;
+  participant_id: number;
+  speaker_name: string;
+  content: string;
+  spoken_at: string;
+}
+
+export interface ParticipantInsight {
+  display_name: string;
+  is_host: boolean;
+  attended_minutes: number;
+  talk_seconds: number;
+  talk_share: number;
+  messages: number;
+  reactions: number;
+  hand_raises: number;
+  transcript_lines: number;
+}
+
+export interface MeetingInsights {
+  duration_minutes: number;
+  participant_count: number;
+  total_talk_seconds: number;
+  total_messages: number;
+  total_reactions: number;
+  total_hand_raises: number;
+  screen_shares: number;
+  transcript_lines: number;
+  reactions_by_emoji: { emoji: string; count: number }[];
+  participants: ParticipantInsight[];
 }

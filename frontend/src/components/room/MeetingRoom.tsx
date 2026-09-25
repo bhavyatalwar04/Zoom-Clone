@@ -8,19 +8,30 @@ import { Modal } from "@/components/ui/Modal";
 import { MenuItem, Popover } from "@/components/ui/Popover";
 import { useToast } from "@/components/ui/Toast";
 import { useActiveSpeaker } from "@/hooks/useActiveSpeaker";
+import { useMeetingShortcuts } from "@/hooks/useMeetingShortcuts";
+import { useNow } from "@/hooks/useNow";
+import { usePictureInPicture } from "@/hooks/usePictureInPicture";
 import { useSettings } from "@/hooks/useSettings";
+import { speechCaptionsSupported, useSpeechCaptions } from "@/hooks/useSpeechCaptions";
+import { useTalkTime } from "@/hooks/useTalkTime";
 import { WS_URL } from "@/lib/api";
 import { copyToClipboard } from "@/lib/invitation";
-import { type EndReason, RoomClient } from "@/lib/rtc/room-client";
+import { type EndReason, type RoomNotice, RoomClient } from "@/lib/rtc/room-client";
 import type { JoinResponse } from "@/lib/types";
+import { CaptionsOverlay } from "./CaptionsOverlay";
 import { ChatPanel } from "./ChatPanel";
 import { InviteModal, type InviteDetails } from "./InviteModal";
+import { EndTimeBanner, MeetingTimer } from "./MeetingClock";
 import { MeetingInfo } from "./MeetingInfo";
 import { ParticipantsPanel } from "./ParticipantsPanel";
+import { ShortcutsModal } from "./ShortcutsModal";
 import { Toolbar } from "./Toolbar";
+import { TranscriptPanel } from "./TranscriptPanel";
 import { type ViewMode, VideoStage } from "./VideoStage";
 import type { TileModel } from "./VideoTile";
 import { RemoteAudio } from "./VideoTile";
+
+type Panel = "participants" | "chat" | "transcript";
 
 interface MeetingRoomProps {
   join: JoinResponse;
@@ -40,6 +51,27 @@ function iceServersFromEnv(): RTCIceServer[] | undefined {
   ];
 }
 
+function noticeMessage(notice: RoomNotice): { tone: "info" | "success" | "error"; text: string } | null {
+  switch (notice.kind) {
+    case "force-mute":
+      return { tone: "info", text: "You have been muted by the host" };
+    case "force-stop-video":
+      return { tone: "info", text: "The host has stopped your video" };
+    case "now-host":
+      return { tone: "success", text: "You are now the host of this meeting" };
+    case "captions":
+      if (!notice.enabled) return { tone: "info", text: "Live captions have been turned off" };
+      return speechCaptionsSupported()
+        ? { tone: "info", text: "Live captions are on" }
+        : { tone: "info", text: "Live captions are on. Use Chrome or Edge to caption your own speech." };
+    case "error":
+    case "media-error":
+      return { tone: "error", text: notice.message };
+    default:
+      return null;
+  }
+}
+
 export function MeetingRoom({ join, initialStream, audio, video, startShare, onExit }: MeetingRoomProps) {
   const toast = useToast();
   const [settings] = useSettings();
@@ -54,14 +86,18 @@ export function MeetingRoom({ join, initialStream, audio, video, startShare, onE
       }),
   );
   const room = useSyncExternalStore(client.subscribe, client.getSnapshot, client.getSnapshot);
+  const now = useNow(1000);
 
-  const [panel, setPanel] = useState<"participants" | "chat" | null>(null);
+  const [panel, setPanel] = useState<Panel | null>(null);
   const [view, setView] = useState<ViewMode>("gallery");
   const [viewMenu, setViewMenu] = useState(false);
   const viewAnchor = useRef<HTMLButtonElement>(null);
   const [inviteOpen, setInviteOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [askUnmute, setAskUnmute] = useState(false);
   const [readCount, setReadCount] = useState(0);
+  const [showCaptions, setShowCaptions] = useState(true);
+  const [leaveRequest, setLeaveRequest] = useState(0);
 
   // Connect once; leaving the page (or unmounting) leaves the meeting and frees the devices.
   useEffect(() => {
@@ -86,14 +122,12 @@ export function MeetingRoom({ join, initialStream, audio, video, startShare, onE
     void client.startScreenShare().then((ok) => !ok && toast.info("Click Share Screen to start sharing."));
   }, [startShare, room.status, client, toast]);
 
-  // Host actions and errors arriving from the server.
+  // Host actions, role changes and errors arriving from the server.
   useEffect(() => {
     if (!room.notice) return;
-    const { notice } = room.notice;
-    if (notice.kind === "force-mute") toast.info("You have been muted by the host");
-    else if (notice.kind === "force-stop-video") toast.info("The host has stopped your video");
-    else if (notice.kind === "ask-unmute") setAskUnmute(true);
-    else toast.error(notice.message);
+    if (room.notice.notice.kind === "ask-unmute") return setAskUnmute(true);
+    const message = noticeMessage(room.notice.notice);
+    if (message) toast[message.tone](message.text);
   }, [room.notice, toast]);
 
   // Unread badge on the Chat button.
@@ -102,13 +136,27 @@ export function MeetingRoom({ join, initialStream, audio, video, startShare, onE
   }, [panel, room.messages.length]);
   const unread = panel === "chat" ? 0 : Math.max(0, room.messages.length - readCount);
 
+  // Speaking detection drives the green border, speaker view and the talk-time insights.
+  const talkTime = useTalkTime(client, room.self?.id ?? null);
   const speakerTracks = useMemo(() => {
     const map = new Map<number, MediaStreamTrack | null>();
     if (room.self) map.set(room.self.id, room.micTrack);
     room.peers.forEach((p) => map.set(p.id, p.stream?.getAudioTracks()[0] ?? null));
     return map;
   }, [room.self, room.micTrack, room.peers]);
-  const activeSpeaker = useActiveSpeaker(speakerTracks);
+  const activeSpeaker = useActiveSpeaker(speakerTracks, talkTime.onSample);
+
+  // Live captions: I transcribe my own microphone while captions are on and I'm unmuted.
+  useSpeechCaptions(room.captionsEnabled && !!room.self?.audio, (text, final) => client.sendCaption(text, final));
+
+  // Picture-in-picture follows the shared screen, else the active speaker.
+  const featuredStream = useMemo(() => {
+    const sharer = room.peers.find((p) => p.screen && p.stream);
+    const speaker = room.peers.find((p) => p.id === activeSpeaker && p.video && p.stream);
+    const anyVideo = room.peers.find((p) => p.video && p.stream);
+    return (sharer ?? speaker ?? anyVideo)?.stream ?? room.localStream;
+  }, [room.peers, room.localStream, activeSpeaker]);
+  const pip = usePictureInPicture(featuredStream);
 
   const tiles = useMemo<TileModel[]>(() => {
     if (!room.self) return [];
@@ -146,6 +194,60 @@ export function MeetingRoom({ join, initialStream, audio, video, startShare, onE
     return [me, ...others];
   }, [room.self, room.peers, room.localStream, room.reactions, activeSpeaker, settings.mirrorVideo]);
 
+  const self = room.self;
+  const isHost = self?.role === "host";
+  const captionsVisible = room.captionsEnabled && showCaptions;
+
+  const togglePanel = (p: Panel) => setPanel((cur) => (cur === p ? null : p));
+  const toggleShare = () => {
+    if (self?.screen) void client.stopScreenShare();
+    else if (!navigator.mediaDevices?.getDisplayMedia) toast.error("Screen sharing is not supported on this device.");
+    else void client.startScreenShare();
+  };
+  /** Host: captions on/off for everyone. Attendee: show/hide them for myself. */
+  const toggleCaptions = () => {
+    if (isHost) {
+      client.setCaptionsEnabled(!room.captionsEnabled);
+      setShowCaptions(true);
+    } else if (!room.captionsEnabled) {
+      toast.info("Captions are off. Ask the host to turn on live captions.");
+    } else {
+      setShowCaptions((v) => !v);
+    }
+  };
+  const leave = () => {
+    talkTime.flush();
+    client.leave("left");
+  };
+  const endForAll = () => {
+    talkTime.flush();
+    client.hostAction("end");
+  };
+
+  const pushToTalkActive = useRef(false);
+  useMeetingShortcuts({
+    muted: !self?.audio,
+    handlers: {
+      toggleAudio: () => void client.setAudioEnabled(!self?.audio),
+      toggleVideo: () => void client.setVideoEnabled(!self?.video),
+      toggleShare,
+      toggleChat: () => togglePanel("chat"),
+      toggleParticipants: () => togglePanel("participants"),
+      toggleHand: () => client.setHandRaised(!self?.hand_raised),
+      toggleCaptions,
+      leave: () => setLeaveRequest((n) => n + 1),
+    },
+    onPushToTalk: (pressed) => {
+      if (pressed) {
+        pushToTalkActive.current = true;
+        void client.setAudioEnabled(true);
+      } else if (pushToTalkActive.current) {
+        pushToTalkActive.current = false;
+        void client.setAudioEnabled(false);
+      }
+    },
+  });
+
   const inviteDetails: InviteDetails = {
     title: join.meeting.title,
     code: join.meeting.code,
@@ -160,7 +262,7 @@ export function MeetingRoom({ join, initialStream, audio, video, startShare, onE
     setViewMenu(false);
   };
 
-  if (!room.self) {
+  if (!self) {
     return (
       <div className="flex h-dvh flex-col items-center justify-center gap-3 bg-room text-room-text">
         <Loader2 className="h-8 w-8 animate-spin text-zoom-blue" />
@@ -168,9 +270,6 @@ export function MeetingRoom({ join, initialStream, audio, video, startShare, onE
       </div>
     );
   }
-
-  const self = room.self;
-  const isHost = self.role === "host";
 
   return (
     <div className="flex h-dvh flex-col overflow-hidden bg-room text-room-text">
@@ -181,7 +280,8 @@ export function MeetingRoom({ join, initialStream, audio, video, startShare, onE
       <header className="relative flex h-11 shrink-0 items-center justify-between px-2 sm:px-3">
         <div className="flex min-w-0 items-center gap-2">
           <MeetingInfo details={inviteDetails} selfName={self.display_name} />
-          <span className="truncate text-xs text-room-text/70">{join.meeting.title}</span>
+          <span className="hidden truncate text-xs text-room-text/70 sm:inline">{join.meeting.title}</span>
+          <MeetingTimer startedAt={join.meeting.started_at} now={now} />
         </div>
         {room.status === "reconnecting" && (
           <span className="absolute left-1/2 -translate-x-1/2 rounded bg-amber-500/90 px-2 py-0.5 text-xs font-bold text-black">
@@ -226,8 +326,10 @@ export function MeetingRoom({ join, initialStream, audio, video, startShare, onE
       )}
 
       <div className="flex min-h-0 flex-1">
-        <main className={clsx("min-w-0 flex-1", panel && "hidden md:block")}>
+        <main className={clsx("relative min-w-0 flex-1", panel && "hidden md:block")}>
+          <EndTimeBanner scheduledStart={join.meeting.scheduled_start} durationMinutes={join.meeting.duration_minutes} now={now} />
           <VideoStage tiles={tiles} view={view} activeSpeakerId={activeSpeaker} showNames={settings.showNamesOnVideo} />
+          {captionsVisible && <CaptionsOverlay captions={room.liveCaptions} selfId={self.id} />}
         </main>
         {panel === "participants" && (
           <ParticipantsPanel
@@ -246,6 +348,14 @@ export function MeetingRoom({ join, initialStream, audio, video, startShare, onE
         {panel === "chat" && (
           <ChatPanel messages={room.messages} selfId={self.id} onSend={(t) => client.sendChat(t)} onClose={() => setPanel(null)} />
         )}
+        {panel === "transcript" && (
+          <TranscriptPanel
+            title={join.meeting.title}
+            segments={room.transcript}
+            captionsEnabled={room.captionsEnabled}
+            onClose={() => setPanel(null)}
+          />
+        )}
       </div>
 
       <Toolbar
@@ -256,17 +366,13 @@ export function MeetingRoom({ join, initialStream, audio, video, startShare, onE
         isHost={isHost}
         participantCount={room.peers.length + 1}
         unreadMessages={unread}
-        panel={panel}
+        panel={panel === "transcript" ? null : panel}
         view={view}
         activeDevices={client.activeDevices}
         onToggleAudio={() => void client.setAudioEnabled(!self.audio)}
         onToggleVideo={() => void client.setVideoEnabled(!self.video)}
-        onToggleShare={() => {
-          if (self.screen) void client.stopScreenShare();
-          else if (!navigator.mediaDevices?.getDisplayMedia) toast.error("Screen sharing is not supported on this device.");
-          else void client.startScreenShare();
-        }}
-        onTogglePanel={(p) => setPanel((cur) => (cur === p ? null : p))}
+        onToggleShare={toggleShare}
+        onTogglePanel={togglePanel}
         onReaction={(emoji) => client.sendReaction(emoji)}
         onToggleHand={() => client.setHandRaised(!self.hand_raised)}
         onChangeView={setView}
@@ -275,14 +381,24 @@ export function MeetingRoom({ join, initialStream, audio, video, startShare, onE
           if (await copyToClipboard(join.join_url)) toast.success("Invite link copied to clipboard");
         }}
         onRecord={() => toast.info("Cloud recording is not available in this demo.")}
+        captionsOn={captionsVisible}
+        onToggleCaptions={toggleCaptions}
+        onOpenTranscript={() => setPanel("transcript")}
+        pipSupported={pip.supported}
+        onPictureInPicture={async () => {
+          if (!(await pip.enter())) toast.info("Picture-in-picture needs someone's video to be on.");
+        }}
+        onShowShortcuts={() => setShortcutsOpen(true)}
         onSelectMic={(id) => void client.switchMicrophone(id)}
         onSelectCamera={(id) => void client.switchCamera(id)}
         confirmLeave={settings.confirmLeave}
-        onLeave={() => client.leave("left")}
-        onEndForAll={() => client.hostAction("end")}
+        leaveRequest={leaveRequest}
+        onLeave={leave}
+        onEndForAll={endForAll}
       />
 
       <InviteModal open={inviteOpen} onClose={() => setInviteOpen(false)} details={inviteDetails} />
+      <ShortcutsModal open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
       <Modal
         open={askUnmute}
         onClose={() => setAskUnmute(false)}

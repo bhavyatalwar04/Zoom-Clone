@@ -1,4 +1,5 @@
-from contextlib import asynccontextmanager
+import asyncio
+from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,7 +19,11 @@ async def lifespan(_app: FastAPI):
     Base.metadata.create_all(engine)
     if settings.seed_on_startup:
         seed_if_empty()
+    sweeper = asyncio.create_task(realtime.run_abandoned_meeting_sweeper())
     yield
+    sweeper.cancel()
+    with suppress(asyncio.CancelledError):
+        await sweeper
 
 
 app = FastAPI(title=settings.app_name, lifespan=lifespan)

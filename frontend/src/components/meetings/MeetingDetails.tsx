@@ -1,7 +1,8 @@
 "use client";
 
 import { format } from "date-fns";
-import { ChevronLeft, Copy, MessageSquare, Pencil, Trash2, Users } from "lucide-react";
+import clsx from "clsx";
+import { ChartColumn, ChevronLeft, Copy, FileText, MessageSquare, Pencil, Trash2, Users } from "lucide-react";
 import { useState } from "react";
 import useSWR from "swr";
 import { Avatar } from "@/components/ui/Avatar";
@@ -12,6 +13,8 @@ import { formatDayLabel, formatDuration, formatMeetingId, formatTimeRange, minut
 import { buildInvitation } from "@/lib/invitation";
 import type { Meeting } from "@/lib/types";
 import { copyInvitation } from "./MeetingActionsMenu";
+import { TranscriptView } from "@/components/transcript/TranscriptView";
+import { InsightsView } from "./InsightsView";
 import { MeetingJoinButton } from "./MeetingJoinButton";
 
 interface MeetingDetailsProps {
@@ -108,14 +111,27 @@ export function MeetingDetails({ meeting: m, onBack, onEdit, onDelete }: Meeting
         </div>
       )}
 
-      {past && <MeetingHistory code={m.code} />}
+      {past && <MeetingHistory code={m.code} title={m.title} />}
     </div>
   );
 }
 
-function MeetingHistory({ code }: { code: string }) {
+const HISTORY_TABS = [
+  { id: "insights", label: "Insights", icon: ChartColumn },
+  { id: "participants", label: "Participants", icon: Users },
+  { id: "chat", label: "Chat", icon: MessageSquare },
+  { id: "transcript", label: "Transcript", icon: FileText },
+] as const;
+
+type HistoryTab = (typeof HISTORY_TABS)[number]["id"];
+
+/** What happened in a past meeting: insights, attendance, chat and transcript. */
+function MeetingHistory({ code, title }: { code: string; title: string }) {
+  const [tab, setTab] = useState<HistoryTab>("insights");
+  const { data: insights, error: insightsError } = useSWR(["insights", code], () => api.insights(code));
   const { data: participants } = useSWR(["participants", code], () => api.participants(code));
   const { data: messages } = useSWR(["messages", code], () => api.messages(code));
+  const { data: transcript } = useSWR(["transcript", code], () => api.transcript(code));
 
   // One row per person, even if they re-joined several times.
   const people = participants
@@ -123,11 +139,33 @@ function MeetingHistory({ code }: { code: string }) {
     : [];
 
   return (
-    <div className="mt-8 grid gap-8 lg:grid-cols-2">
-      <section>
-        <h2 className="mb-3 flex items-center gap-2 text-sm font-bold text-ink">
-          <Users className="h-4 w-4 text-muted" /> Participants ({people.length})
-        </h2>
+    <div className="mt-8">
+      <div className="mb-5 flex gap-1 overflow-x-auto border-b border-line" role="tablist">
+        {HISTORY_TABS.map(({ id, label, icon: Icon }) => (
+          <button
+            key={id}
+            role="tab"
+            aria-selected={tab === id}
+            onClick={() => setTab(id)}
+            className={clsx(
+              "-mb-px flex shrink-0 items-center gap-1.5 border-b-2 px-3 pb-2 pt-1 text-sm font-bold",
+              tab === id ? "border-zoom-blue text-zoom-blue" : "border-transparent text-muted hover:text-ink",
+            )}
+          >
+            <Icon className="h-4 w-4" /> {label}
+            {id === "participants" && participants && <span className="font-normal">({people.length})</span>}
+          </button>
+        ))}
+      </div>
+
+      {tab === "insights" &&
+        (insights ? (
+          <InsightsView insights={insights} />
+        ) : (
+          <p className="text-sm text-muted">{insightsError ? "Couldn't load insights." : "Loading insights…"}</p>
+        ))}
+
+      {tab === "participants" && (
         <ul className="space-y-2.5">
           {people.map((p) => (
             <li key={p.id} className="flex items-center gap-2.5 text-sm">
@@ -135,28 +173,33 @@ function MeetingHistory({ code }: { code: string }) {
               <span className="min-w-0 flex-1 truncate">
                 {p.display_name}
                 {p.role === "host" && <span className="text-muted"> (Host)</span>}
+                {p.was_removed && <span className="text-zoom-red"> · removed</span>}
               </span>
-              <span className="text-xs text-muted">{format(new Date(p.joined_at), "h:mm a")}</span>
+              <span className="text-xs text-muted">Joined {format(new Date(p.joined_at), "h:mm a")}</span>
             </li>
           ))}
         </ul>
-      </section>
-      <section>
-        <h2 className="mb-3 flex items-center gap-2 text-sm font-bold text-ink">
-          <MessageSquare className="h-4 w-4 text-muted" /> Chat
-        </h2>
-        {messages?.length === 0 && <p className="text-sm text-muted">No messages were sent in this meeting.</p>}
-        <ul className="space-y-3">
-          {messages?.map((msg) => (
-            <li key={msg.id} className="text-sm">
-              <p className="text-xs text-muted">
-                <span className="font-bold text-ink-2">{msg.sender_name}</span> · {format(new Date(msg.sent_at), "h:mm a")}
-              </p>
-              <p className="mt-0.5 text-ink">{msg.content}</p>
-            </li>
-          ))}
-        </ul>
-      </section>
+      )}
+
+      {tab === "chat" && (
+        <>
+          {messages?.length === 0 && <p className="text-sm text-muted">No messages were sent in this meeting.</p>}
+          <ul className="space-y-3">
+            {messages?.map((msg) => (
+              <li key={msg.id} className="text-sm">
+                <p className="text-xs text-muted">
+                  <span className="font-bold text-ink-2">{msg.sender_name}</span> · {format(new Date(msg.sent_at), "h:mm a")}
+                </p>
+                <p className="mt-0.5 text-ink">{msg.content}</p>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+
+      {tab === "transcript" && (
+        <TranscriptView title={title} segments={transcript ?? []} emptyText="Live captions were not turned on in this meeting." />
+      )}
     </div>
   );
 }

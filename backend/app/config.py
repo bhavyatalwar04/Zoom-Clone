@@ -29,6 +29,11 @@ class Settings(BaseSettings):
     # How long a room may sit empty before the meeting is marked as ended.
     empty_room_grace_seconds: int = 20
 
+    # A "live" meeting nobody has connected to for this long is ended by a background sweep
+    # (e.g. the tab closed between the join request and the WebSocket, or the server restarted).
+    abandoned_meeting_seconds: int = 60
+    sweep_interval_seconds: int = 30
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]

@@ -31,7 +31,8 @@ export function useLocalPreview(initial: { audio: boolean; video: boolean }) {
     navigator.mediaDevices
       ?.getUserMedia({ audio: true })
       .then((s) => {
-        if (cancelled) return s.getTracks().forEach((t) => t.stop());
+        // Arrived after the user already joined: the meeting opens its own mic, so don't leak this one.
+        if (cancelled || handedOver.current) return s.getTracks().forEach((t) => t.stop());
         base.addTrack(s.getAudioTracks()[0]);
         setMicState("granted");
         publish(base);
@@ -65,7 +66,7 @@ export function useLocalPreview(initial: { audio: boolean; video: boolean }) {
     navigator.mediaDevices
       ?.getUserMedia({ video: { width: 1280, height: 720 } })
       .then((s) => {
-        if (cancelled) return s.getTracks().forEach((t) => t.stop());
+        if (cancelled || handedOver.current) return s.getTracks().forEach((t) => t.stop());
         current.addTrack(s.getVideoTracks()[0]);
         setCamState("granted");
         publish(current);

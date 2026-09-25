@@ -6,6 +6,7 @@ State lives in this process, so the API must run as a single worker (see README)
 """
 
 import asyncio
+import itertools
 import logging
 from dataclasses import dataclass, field
 from typing import Any
@@ -13,6 +14,7 @@ from typing import Any
 from fastapi import WebSocket
 
 logger = logging.getLogger(__name__)
+_join_sequence = itertools.count()
 
 
 @dataclass
@@ -25,6 +27,8 @@ class Peer:
     video: bool = True
     screen: bool = False
     hand_raised: bool = False
+    # Monotonic join order, used to pick the next host when the host leaves.
+    joined_seq: int = field(default_factory=lambda: next(_join_sequence))
 
     @property
     def is_host(self) -> bool:
@@ -48,6 +52,8 @@ class Room:
     meeting_id: int
     peers: dict[int, Peer] = field(default_factory=dict)
     end_task: asyncio.Task | None = None
+    # Live captions are switched on for everyone by the host.
+    captions_enabled: bool = False
 
 
 class RoomManager:
@@ -56,6 +62,9 @@ class RoomManager:
 
     def get(self, code: str) -> Room | None:
         return self._rooms.get(code)
+
+    def codes(self) -> set[str]:
+        return set(self._rooms)
 
     def add_peer(self, code: str, meeting_id: int, peer: Peer) -> Peer | None:
         """Registers a peer. Returns the previous connection of the same participant, if any."""

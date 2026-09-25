@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from ..config import get_settings
 from ..database import utcnow
-from ..errors import AppError, MeetingNotFound, NotMeetingHost
+from ..errors import AppError, MeetingAccessDenied, MeetingNotFound, NotMeetingHost
 from ..models import (
     ChatMessage,
     Meeting,
@@ -20,6 +20,7 @@ from ..models import (
     MeetingStatus,
     MeetingType,
     ParticipantRole,
+    TranscriptSegment,
     User,
 )
 from ..schemas import (
@@ -29,6 +30,7 @@ from ..schemas import (
     MeetingLookup,
     MeetingOut,
     ScheduledMeetingCreate,
+    TranscriptSegmentOut,
     UserOut,
 )
 from ..security import generate_meeting_code, generate_passcode, generate_start_token
@@ -119,6 +121,8 @@ def to_lookup(meeting: Meeting) -> MeetingLookup:
         status=meeting.status,
         meeting_type=meeting.meeting_type,
         scheduled_start=meeting.scheduled_start,
+        duration_minutes=meeting.duration_minutes,
+        started_at=meeting.started_at,
         requires_passcode=meeting.passcode is not None,
         join_before_host=meeting.join_before_host,
     )
@@ -131,6 +135,16 @@ def to_chat_out(message: ChatMessage) -> ChatMessageOut:
         sender_name=message.participant.display_name,
         content=message.content,
         sent_at=message.sent_at,
+    )
+
+
+def to_transcript_out(segment: TranscriptSegment) -> TranscriptSegmentOut:
+    return TranscriptSegmentOut(
+        id=segment.id,
+        participant_id=segment.participant_id,
+        speaker_name=segment.participant.display_name,
+        content=segment.content,
+        spoken_at=segment.spoken_at,
     )
 
 
@@ -166,6 +180,19 @@ def _involving(user: User):
     invited = exists().where(MeetingInvitee.meeting_id == Meeting.id, MeetingInvitee.user_id == user.id)
     attended = exists().where(MeetingParticipant.meeting_id == Meeting.id, MeetingParticipant.user_id == user.id)
     return or_(Meeting.host_id == user.id, invited, attended)
+
+
+def get_accessible_meeting(db: Session, code: str, user: User) -> Meeting:
+    """Full details (passcode, attendance, chat, transcript) only for people involved in the meeting.
+
+    Everyone else can only use the public `lookup`, so knowing a Meeting ID does not reveal
+    its passcode.
+    """
+    meeting = get_meeting(db, code)
+    involved = db.scalar(select(exists().where(Meeting.id == meeting.id, _involving(user))))
+    if not involved:
+        raise MeetingAccessDenied()
+    return meeting
 
 
 def list_upcoming(db: Session, user: User, limit: int = 50) -> list[Meeting]:
@@ -299,6 +326,24 @@ def join_meeting(db: Session, meeting: Meeting, user: User, data: JoinRequest) -
     db.add(participant)
     db.commit()
     return participant, is_host
+
+
+def end_abandoned_meetings(db: Session, connected_codes: set[str], grace: timedelta) -> list[str]:
+    """Ends live meetings nobody is connected to (e.g. a tab closed right after joining, or a
+    server restart wiped the in-memory rooms). Returns the codes that were ended."""
+    cutoff = utcnow() - grace
+    ended: list[str] = []
+    live = db.scalars(
+        select(Meeting).where(Meeting.status == MeetingStatus.LIVE).options(selectinload(Meeting.participants))
+    ).all()
+    for meeting in live:
+        if meeting.meeting_code in connected_codes:
+            continue
+        last_join = max((p.joined_at for p in meeting.participants), default=meeting.started_at)
+        if last_join is None or last_join < cutoff:
+            end_meeting(db, meeting.id)
+            ended.append(meeting.meeting_code)
+    return ended
 
 
 def end_meeting(db: Session, meeting_id: int) -> None:
