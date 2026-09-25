@@ -2,7 +2,7 @@
 
 A working clone of the **Zoom Workplace** web app. You can start instant meetings, join by Meeting ID or invite link, schedule meetings, and hold real multi-party video calls in the browser, with chat, reactions, screen sharing and host controls.
 
-**Live demo:** _frontend URL_ · **API:** _backend URL_ (the free backend sleeps when idle, so the first load can take about a minute)
+**Live demo:** https://zoom-scaler.vercel.app · **API:** https://zoom-clone-api-qhrb.onrender.com/docs (the free backend sleeps when idle, so the first load can take about a minute)
 
 | | |
 |---|---|
