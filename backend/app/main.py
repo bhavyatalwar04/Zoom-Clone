@@ -4,11 +4,11 @@ from contextlib import asynccontextmanager, suppress
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from . import models  # noqa: F401  (registers the tables on Base.metadata)
+from . import models, realtime  # noqa: F401  (models registers the tables on Base.metadata)
 from .config import get_settings
 from .database import Base, engine
 from .errors import AppError, app_error_handler
-from .routers import meetings, realtime, users
+from .routers import meetings, users
 from .seed import seed_if_empty
 
 settings = get_settings()

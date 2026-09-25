@@ -1,7 +1,7 @@
 "use client";
 
 import clsx from "clsx";
-import { LayoutGrid, Loader2, Maximize2, MonitorUp, UserRound } from "lucide-react";
+import { Check, EyeOff, LayoutGrid, Loader2, Maximize2, MonitorUp, UserRound, VideoOff } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Button } from "@/components/ui/Button";
 import { Modal } from "@/components/ui/Modal";
@@ -16,7 +16,7 @@ import { speechCaptionsSupported, useSpeechCaptions } from "@/hooks/useSpeechCap
 import { useTalkTime } from "@/hooks/useTalkTime";
 import { WS_URL } from "@/lib/api";
 import { copyToClipboard } from "@/lib/invitation";
-import { type EndReason, type RoomNotice, RoomClient } from "@/lib/rtc/room-client";
+import { type EndReason, isModerator, type RoomNotice, RoomClient } from "@/lib/rtc/room-client";
 import type { JoinResponse } from "@/lib/types";
 import { CaptionsOverlay } from "./CaptionsOverlay";
 import { ChatPanel } from "./ChatPanel";
@@ -24,12 +24,14 @@ import { InviteModal, type InviteDetails } from "./InviteModal";
 import { EndTimeBanner, MeetingTimer } from "./MeetingClock";
 import { MeetingInfo } from "./MeetingInfo";
 import { ParticipantsPanel } from "./ParticipantsPanel";
+import { RenameModal } from "./RenameModal";
 import { ShortcutsModal } from "./ShortcutsModal";
 import { Toolbar } from "./Toolbar";
 import { TranscriptPanel } from "./TranscriptPanel";
 import { type ViewMode, VideoStage } from "./VideoStage";
 import type { TileModel } from "./VideoTile";
 import { RemoteAudio } from "./VideoTile";
+import { WaitingRoomAlert, WaitingRoomScreen } from "./WaitingRoom";
 
 type Panel = "participants" | "chat" | "transcript";
 
@@ -64,6 +66,8 @@ function noticeMessage(notice: RoomNotice): { tone: "info" | "success" | "error"
       return speechCaptionsSupported()
         ? { tone: "info", text: "Live captions are on" }
         : { tone: "info", text: "Live captions are on. Use Chrome or Edge to caption your own speech." };
+    case "blocked":
+      return { tone: "info", text: notice.message };
     case "error":
     case "media-error":
       return { tone: "error", text: notice.message };
@@ -98,6 +102,10 @@ export function MeetingRoom({ join, initialStream, audio, video, startShare, onE
   const [readCount, setReadCount] = useState(0);
   const [showCaptions, setShowCaptions] = useState(true);
   const [leaveRequest, setLeaveRequest] = useState(0);
+  const [pinned, setPinned] = useState<number | null>(null);
+  const [hideSelf, setHideSelf] = useState(false);
+  const [hideNonVideo, setHideNonVideo] = useState(false);
+  const [renameTarget, setRenameTarget] = useState<{ id: number; name: string; isSelf: boolean } | null>(null);
 
   // Connect once; leaving the page (or unmounting) leaves the meeting and frees the devices.
   useEffect(() => {
@@ -171,6 +179,9 @@ export function MeetingRoom({ join, initialStream, audio, video, startShare, onE
       audio: room.self.audio,
       screen: false, // my own share is never shown back to me
       handRaised: room.self.hand_raised,
+      feedback: room.self.feedback,
+      pinned: pinned === room.self.id,
+      spotlighted: room.spotlightId === room.self.id,
       reaction: reactionFor(room.self.id),
       speaking: activeSpeaker === room.self.id,
       connecting: false,
@@ -186,16 +197,23 @@ export function MeetingRoom({ join, initialStream, audio, video, startShare, onE
       audio: p.audio,
       screen: p.screen,
       handRaised: p.hand_raised,
+      feedback: p.feedback,
+      pinned: pinned === p.id,
+      spotlighted: room.spotlightId === p.id,
       reaction: reactionFor(p.id),
       speaking: activeSpeaker === p.id,
       connecting: p.connection === "new" || p.connection === "connecting",
       mirror: false,
     }));
     return [me, ...others];
-  }, [room.self, room.peers, room.localStream, room.reactions, activeSpeaker, settings.mirrorVideo]);
+  }, [room.self, room.peers, room.localStream, room.reactions, room.spotlightId, pinned, activeSpeaker, settings.mirrorVideo]);
+
+  // A pin only applies while that person is still here.
+  const pinnedId = pinned !== null && tiles.some((t) => t.id === pinned) ? pinned : null;
 
   const self = room.self;
   const isHost = self?.role === "host";
+  const moderator = isModerator(self);
   const captionsVisible = room.captionsEnabled && showCaptions;
 
   const togglePanel = (p: Panel) => setPanel((cur) => (cur === p ? null : p));
@@ -262,6 +280,10 @@ export function MeetingRoom({ join, initialStream, audio, video, startShare, onE
     setViewMenu(false);
   };
 
+  if (room.status === "waiting") {
+    return <WaitingRoomScreen title={room.waitingTitle} onLeave={() => client.leave("left")} />;
+  }
+
   if (!self) {
     return (
       <div className="flex h-dvh flex-col items-center justify-center gap-3 bg-room text-room-text">
@@ -296,12 +318,19 @@ export function MeetingRoom({ join, initialStream, audio, video, startShare, onE
           >
             <LayoutGrid className="h-4 w-4" /> View
           </button>
-          <Popover open={viewMenu} onClose={() => setViewMenu(false)} anchorRef={viewAnchor} className="right-0 top-9 w-44 bg-[#2b2b2b] p-1.5">
+          <Popover open={viewMenu} onClose={() => setViewMenu(false)} anchorRef={viewAnchor} className="right-0 top-9 w-64 bg-[#2b2b2b] p-1.5">
             <MenuItem tone="dark" icon={<UserRound className="h-4 w-4" />} onClick={() => chooseView("speaker")}>
               Speaker {view === "speaker" && "✓"}
             </MenuItem>
             <MenuItem tone="dark" icon={<LayoutGrid className="h-4 w-4" />} onClick={() => chooseView("gallery")}>
               Gallery {view === "gallery" && "✓"}
+            </MenuItem>
+            <div className="my-1 border-t border-white/10" />
+            <MenuItem tone="dark" icon={<EyeOff className="h-4 w-4" />} onClick={() => setHideSelf((v) => !v)}>
+              <span className="flex-1">Hide Self View</span> {hideSelf && <Check className="h-4 w-4 text-[#6ea1ff]" />}
+            </MenuItem>
+            <MenuItem tone="dark" icon={<VideoOff className="h-4 w-4" />} onClick={() => setHideNonVideo((v) => !v)}>
+              <span className="flex-1">Hide Non-video Participants</span> {hideNonVideo && <Check className="h-4 w-4 text-[#6ea1ff]" />}
             </MenuItem>
           </Popover>
           <button
@@ -328,25 +357,54 @@ export function MeetingRoom({ join, initialStream, audio, video, startShare, onE
       <div className="flex min-h-0 flex-1">
         <main className={clsx("relative min-w-0 flex-1", panel && "hidden md:block")}>
           <EndTimeBanner scheduledStart={join.meeting.scheduled_start} durationMinutes={join.meeting.duration_minutes} now={now} />
-          <VideoStage tiles={tiles} view={view} activeSpeakerId={activeSpeaker} showNames={settings.showNamesOnVideo} />
+          <VideoStage
+            tiles={tiles}
+            view={view}
+            activeSpeakerId={activeSpeaker}
+            pinnedId={pinnedId}
+            spotlightId={room.spotlightId}
+            hideSelf={hideSelf}
+            hideNonVideo={hideNonVideo}
+            showNames={settings.showNamesOnVideo}
+            onTogglePin={(id) => setPinned((cur) => (cur === id ? null : id))}
+          />
+          {moderator && panel !== "participants" && (
+            <WaitingRoomAlert
+              waiting={room.waiting}
+              onAdmit={(id) => client.hostAction("admit", { target: id })}
+              onOpenList={() => setPanel("participants")}
+            />
+          )}
           {captionsVisible && <CaptionsOverlay captions={room.liveCaptions} selfId={self.id} />}
         </main>
         {panel === "participants" && (
           <ParticipantsPanel
             self={self}
             peers={room.peers}
+            waiting={room.waiting}
+            security={room.security}
+            pinnedId={pinnedId}
+            spotlightId={room.spotlightId}
             onClose={() => setPanel(null)}
             onInvite={() => setInviteOpen(true)}
             onToggleHand={() => client.setHandRaised(!self.hand_raised)}
-            onMuteAll={() => {
-              client.hostAction("mute-all");
-              toast.success("All participants have been muted");
+            onHostAction={(action, payload) => {
+              client.hostAction(action, payload);
+              if (action === "mute-all") toast.success("All participants have been muted");
             }}
-            onHostAction={(action, target) => client.hostAction(action, target)}
+            onPin={setPinned}
+            onRename={setRenameTarget}
           />
         )}
         {panel === "chat" && (
-          <ChatPanel messages={room.messages} selfId={self.id} onSend={(t) => client.sendChat(t)} onClose={() => setPanel(null)} />
+          <ChatPanel
+            messages={room.messages}
+            self={self}
+            peers={room.peers}
+            chatAllowed={room.security.allow_chat}
+            onSend={(text, to) => client.sendChat(text, to)}
+            onClose={() => setPanel(null)}
+          />
         )}
         {panel === "transcript" && (
           <TranscriptPanel
@@ -364,6 +422,12 @@ export function MeetingRoom({ join, initialStream, audio, video, startShare, onE
         sharing={self.screen}
         handRaised={self.hand_raised}
         isHost={isHost}
+        isModerator={moderator}
+        security={room.security}
+        onSecurityChange={(patch) => client.hostAction("security", patch)}
+        waitingCount={moderator ? room.waiting.length : 0}
+        feedback={self.feedback}
+        onFeedback={(value) => client.setFeedback(value)}
         participantCount={room.peers.length + 1}
         unreadMessages={unread}
         panel={panel === "transcript" ? null : panel}
@@ -399,6 +463,13 @@ export function MeetingRoom({ join, initialStream, audio, video, startShare, onE
 
       <InviteModal open={inviteOpen} onClose={() => setInviteOpen(false)} details={inviteDetails} />
       <ShortcutsModal open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
+      <RenameModal
+        target={renameTarget}
+        onClose={() => setRenameTarget(null)}
+        onRename={(name) =>
+          renameTarget?.isSelf ? client.renameSelf(name) : client.hostAction("rename", { target: renameTarget?.id, name })
+        }
+      />
       <Modal
         open={askUnmute}
         onClose={() => setAskUnmute(false)}

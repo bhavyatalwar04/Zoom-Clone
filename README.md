@@ -34,6 +34,14 @@ A working clone of the **Zoom Workplace** web app. You can start instant meeting
 - **Responsive layout**: desktop, tablet and mobile (the side panels become full-screen overlays and the toolbar shrinks)
 - **Meetings page**: Upcoming / Previous tabs with a details pane. Past meetings have Insights, Participants, Chat and Transcript tabs.
 
+### Zoom meeting controls
+- **Waiting room.** Turn it on when scheduling, or live from **Security**. Attendees wait on a *"Please wait, the meeting host will let you in soon"* screen. Hosts get a pop-up with **Admit** and a Waiting Room section in Participants (**Admit**, **Remove**, **Admit all**). Turning the waiting room off admits everyone waiting.
+- **Security menu** (host and co-hosts): **Lock Meeting** (new joins are refused), **Enable Waiting Room**, and whether participants may **share their screen, chat, rename themselves or unmute themselves**. The server enforces every one of these, not just the UI.
+- **Roles:** **Make Co-Host / Withdraw Co-Host**, **Make Host** (hand the meeting over), **Rename**, **Remove**, **Stop Video**, **Ask to Unmute** (allowed even when self-unmuting is off), **Lower all hands**. Co-hosts can moderate but can't end the meeting or change roles.
+- **Spotlight** a video for everyone, or **Pin** one for yourself. **View → Hide Self View / Hide Non-video Participants**.
+- **Private chat:** choose *Everyone* or one person in the chat's **To:** picker. Direct messages go only to the two people involved and are never included in the saved history. When the host disables chat, participants can still message the host.
+- **Non-verbal feedback** (Yes, No, Slow down, Speed up, I'm away) in the Reactions menu, shown on the person's video and in the participant list.
+
 ### Beyond Zoom's basics (novelty)
 - **Live captions and a searchable transcript.** The host clicks **Show Captions** to turn captions on for everyone. Each participant's browser transcribes *their own* microphone using the Web Speech API, so every line is attributed to the right speaker and no audio is ever sent to our server. Captions appear over the video. Finished lines are saved to the database as the meeting transcript, which you can view live (**More → View full transcript**) and later search, with highlighted matches, and download as `.txt` from the meeting's page. Speech recognition works in Chrome and Edge; in other browsers you still see everyone else's captions.
 - **Meeting insights.** After a meeting, the Insights tab shows its duration, attendance, chat and reaction totals, **talk time per person** (a bar chart with each person's share of speaking time and a hover tooltip), an engagement table (attended time, talk time, messages, reactions, raised hands) and a reaction breakdown. Talk time comes from the same audio-level detection that drives the active-speaker highlight. Reactions, raised hands and screen shares are recorded in an activity log.
@@ -123,9 +131,11 @@ npm test                    # 15 unit tests (Vitest)
 | `schemas.py` | Pydantic request/response models and validation (time zones, emails, passcodes) |
 | `services/meetings.py` | Business logic: create, schedule, list upcoming/recent, join rules, access checks, end, end abandoned meetings |
 | `services/insights.py` | Post-meeting insights, computed with `GROUP BY` queries over chat, transcript and activity rows |
-| `services/rooms.py` | Who is connected to which room (in memory), join order, captions on/off |
 | `routers/meetings.py`, `routers/users.py` | REST endpoints |
-| `routers/realtime.py` | WebSocket endpoint: signalling relay, chat, reactions, captions, talk time, host actions, host handoff, and the background sweeper that ends abandoned meetings |
+| `realtime/socket.py` | WebSocket endpoint: authenticates a participant, admits them or sends them to the waiting room, and passes each message to its handler |
+| `realtime/handlers/` | One module per feature (`basics`, `chat`, `moderation`, ...). Each message type is registered with `@on("type", Access.X)`, and `dispatch` checks the sender's role before calling it. |
+| `realtime/lifecycle.py` | Admit, waiting room, leave, remove, host handoff, end meeting, and the sweeper that ends abandoned meetings |
+| `realtime/state.py`, `realtime/store.py` | In-memory room state (peers, waiting room, security, groups), and database helpers run in a thread pool |
 | `security.py` | Meeting ID / passcode / token generation, HMAC-signed WebSocket tokens |
 | `seed.py` | Sample users and meetings, generated relative to "now" |
 

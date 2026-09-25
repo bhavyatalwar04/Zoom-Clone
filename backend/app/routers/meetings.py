@@ -89,7 +89,9 @@ def list_participants(code: str, db: DbSession, user: CurrentUser):
 
 @router.get("/{code}/messages", response_model=list[ChatMessageOut])
 def list_messages(code: str, db: DbSession, user: CurrentUser):
-    return [service.to_chat_out(m) for m in service.get_accessible_meeting(db, code, user).messages]
+    meeting = service.get_accessible_meeting(db, code, user)
+    # Private messages stay private: the saved history only contains messages sent to everyone.
+    return [service.to_chat_out(m) for m in meeting.messages if m.recipient_participant_id is None]
 
 
 @router.get("/{code}/transcript", response_model=list[TranscriptSegmentOut])

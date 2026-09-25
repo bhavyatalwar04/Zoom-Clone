@@ -1,0 +1,162 @@
+"""Synchronous database helpers for the realtime layer.
+
+SQLAlchemy + SQLite are synchronous, so the async WebSocket code calls these through
+`run_in_threadpool` (see `db()` below). Each helper opens a short-lived session.
+"""
+
+from datetime import timedelta
+from typing import Any, Callable, TypeVar
+
+from sqlalchemy import or_, select, update
+from starlette.concurrency import run_in_threadpool
+
+from ..database import SessionLocal, utcnow
+from ..models import (
+    ActivityKind,
+    ChatMessage,
+    Meeting,
+    MeetingActivity,
+    MeetingParticipant,
+    MeetingStatus,
+    ParticipantRole,
+    TranscriptSegment,
+)
+from ..services import meetings as meeting_service
+
+HISTORY_LIMIT = 200
+T = TypeVar("T")
+
+
+async def db(fn: Callable[..., T], *args: Any) -> T:
+    """Run a blocking helper from async code."""
+    return await run_in_threadpool(fn, *args)
+
+
+def open_session(participant_id: int, code: str) -> dict[str, Any] | None:
+    """Validates the participant and marks them present. Returns what the socket needs, or None."""
+    with SessionLocal() as session:
+        participant = session.get(MeetingParticipant, participant_id)
+        if participant is None or participant.was_removed:
+            return None
+        meeting = participant.meeting
+        if meeting.meeting_code != code or meeting.status == MeetingStatus.ENDED:
+            return None
+        participant.left_at = None
+        session.commit()
+        return {
+            "meeting_id": meeting.id,
+            "title": meeting.title,
+            "display_name": participant.display_name,
+            "role": participant.role.value,
+            "locked": meeting.is_locked,
+            "waiting_room": meeting.waiting_room,
+        }
+
+
+def load_history(meeting_id: int, participant_id: int) -> dict[str, list]:
+    """Chat this participant may see (public + their private messages) and the transcript so far."""
+    with SessionLocal() as session:
+        messages = session.scalars(
+            select(ChatMessage)
+            .where(
+                ChatMessage.meeting_id == meeting_id,
+                or_(
+                    ChatMessage.recipient_participant_id.is_(None),
+                    ChatMessage.participant_id == participant_id,
+                    ChatMessage.recipient_participant_id == participant_id,
+                ),
+            )
+            .order_by(ChatMessage.sent_at.desc())
+            .limit(HISTORY_LIMIT)
+        ).all()
+        transcript = session.scalars(
+            select(TranscriptSegment)
+            .where(TranscriptSegment.meeting_id == meeting_id)
+            .order_by(TranscriptSegment.spoken_at.desc())
+            .limit(HISTORY_LIMIT)
+        ).all()
+        return {
+            "messages": [meeting_service.to_chat_out(m).model_dump(mode="json") for m in reversed(messages)],
+            "transcript": [meeting_service.to_transcript_out(s).model_dump(mode="json") for s in reversed(transcript)],
+        }
+
+
+def mark_left(participant_id: int, removed: bool = False) -> None:
+    with SessionLocal() as session:
+        participant = session.get(MeetingParticipant, participant_id)
+        if participant is None:
+            return
+        participant.left_at = participant.left_at or utcnow()
+        participant.was_removed = participant.was_removed or removed
+        session.commit()
+
+
+def save_chat(meeting_id: int, participant_id: int, text: str, recipient_id: int | None) -> dict[str, Any]:
+    with SessionLocal() as session:
+        message = ChatMessage(
+            meeting_id=meeting_id, participant_id=participant_id, recipient_participant_id=recipient_id, content=text
+        )
+        session.add(message)
+        session.commit()
+        session.refresh(message)
+        return meeting_service.to_chat_out(message).model_dump(mode="json")
+
+
+def save_transcript(meeting_id: int, participant_id: int, text: str) -> dict[str, Any]:
+    with SessionLocal() as session:
+        segment = TranscriptSegment(meeting_id=meeting_id, participant_id=participant_id, content=text)
+        session.add(segment)
+        session.commit()
+        session.refresh(segment)
+        return meeting_service.to_transcript_out(segment).model_dump(mode="json")
+
+
+def log_activity(meeting_id: int, participant_id: int, kind: ActivityKind, detail: str | None = None) -> None:
+    with SessionLocal() as session:
+        session.add(MeetingActivity(meeting_id=meeting_id, participant_id=participant_id, kind=kind, detail=detail))
+        session.commit()
+
+
+def add_talk_time(participant_id: int, ms: int) -> None:
+    with SessionLocal() as session:
+        session.execute(
+            update(MeetingParticipant)
+            .where(MeetingParticipant.id == participant_id)
+            .values(talk_time_ms=MeetingParticipant.talk_time_ms + ms)
+        )
+        session.commit()
+
+
+def set_role(participant_id: int, role: str) -> None:
+    with SessionLocal() as session:
+        session.execute(
+            update(MeetingParticipant).where(MeetingParticipant.id == participant_id).values(role=ParticipantRole(role))
+        )
+        session.commit()
+
+
+def rename_participant(participant_id: int, name: str) -> None:
+    with SessionLocal() as session:
+        session.execute(update(MeetingParticipant).where(MeetingParticipant.id == participant_id).values(display_name=name))
+        session.commit()
+
+
+def set_meeting_flags(meeting_id: int, **flags: bool) -> None:
+    """Persists the Security menu switches that the REST join endpoint must also respect."""
+    columns = {"locked": "is_locked", "waiting_room": "waiting_room"}
+    values = {columns[k]: v for k, v in flags.items() if k in columns}
+    if not values:
+        return
+    with SessionLocal() as session:
+        session.execute(update(Meeting).where(Meeting.id == meeting_id).values(**values))
+        session.commit()
+
+
+def end_meeting(meeting_id: int) -> None:
+    with SessionLocal() as session:
+        meeting_service.end_meeting(session, meeting_id)
+
+
+def end_abandoned(connected_codes: set[str], grace: timedelta) -> list[str]:
+    with SessionLocal() as session:
+        return meeting_service.end_abandoned_meetings(session, connected_codes, grace)

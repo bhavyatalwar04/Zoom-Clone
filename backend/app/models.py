@@ -47,6 +47,7 @@ class MeetingStatus(str, enum.Enum):
 
 class ParticipantRole(str, enum.Enum):
     HOST = "host"
+    CO_HOST = "co_host"
     ATTENDEE = "attendee"
 
 
@@ -109,6 +110,9 @@ class Meeting(Base):
     mute_on_entry: Mapped[bool] = mapped_column(Boolean, default=False)
     host_video_on: Mapped[bool] = mapped_column(Boolean, default=True)
     participant_video_on: Mapped[bool] = mapped_column(Boolean, default=True)
+    waiting_room: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Set from the in-meeting Security menu; a locked meeting refuses new attendees.
+    is_locked: Mapped[bool] = mapped_column(Boolean, default=False)
 
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, onupdate=utcnow)
@@ -179,7 +183,10 @@ class MeetingParticipant(Base):
 
 
 class ChatMessage(Base):
-    """In-meeting chat, persisted so late joiners see the history."""
+    """In-meeting chat, persisted so late joiners see the history.
+
+    `recipient_participant_id` is set for private (direct) messages; NULL means "to Everyone".
+    """
 
     __tablename__ = "chat_messages"
 
@@ -188,11 +195,15 @@ class ChatMessage(Base):
     participant_id: Mapped[int] = mapped_column(
         ForeignKey("meeting_participants.id", ondelete="CASCADE"), index=True
     )
+    recipient_participant_id: Mapped[int | None] = mapped_column(
+        ForeignKey("meeting_participants.id", ondelete="CASCADE"), index=True
+    )
     content: Mapped[str] = mapped_column(Text)
     sent_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
 
     meeting: Mapped[Meeting] = relationship(back_populates="messages")
-    participant: Mapped[MeetingParticipant] = relationship()
+    participant: Mapped[MeetingParticipant] = relationship(foreign_keys=[participant_id])
+    recipient: Mapped[MeetingParticipant | None] = relationship(foreign_keys=[recipient_participant_id])
 
 
 class TranscriptSegment(Base):

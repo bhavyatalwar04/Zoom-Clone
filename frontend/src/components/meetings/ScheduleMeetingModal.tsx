@@ -38,6 +38,7 @@ interface FormState {
   participantVideo: boolean;
   joinBeforeHost: boolean;
   muteOnEntry: boolean;
+  waitingRoom: boolean;
 }
 
 const browserTimeZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -69,6 +70,7 @@ function emptyForm(hostName: string | undefined): FormState {
     participantVideo: true,
     joinBeforeHost: false,
     muteOnEntry: false,
+    waitingRoom: false,
   };
 }
 
@@ -89,6 +91,7 @@ function formFromMeeting(m: Meeting): FormState {
     participantVideo: m.participant_video_on,
     joinBeforeHost: m.join_before_host,
     muteOnEntry: m.mute_on_entry,
+    waitingRoom: m.waiting_room,
   };
 }
 
@@ -106,6 +109,7 @@ function toPayload(f: FormState): ScheduleMeetingInput {
     participant_video_on: f.participantVideo,
     join_before_host: f.joinBeforeHost,
     mute_on_entry: f.muteOnEntry,
+    waiting_room: f.waitingRoom,
   };
 }
 
@@ -355,6 +359,12 @@ export function ScheduleMeetingModal({ open, onClose, meeting, onSaved }: Schedu
           </div>
           <FieldError>{errors.passcode}</FieldError>
           <p className="text-xs text-muted">Only users who have the invite link or passcode can join the meeting.</p>
+          <Checkbox
+            checked={form.waitingRoom}
+            onChange={(v) => set("waitingRoom", v)}
+            label="Waiting Room"
+            description="Only users admitted by the host can join the meeting."
+          />
         </div>
 
         <div className="grid gap-4 sm:grid-cols-2">

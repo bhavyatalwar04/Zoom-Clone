@@ -42,6 +42,7 @@ class MeetingOptions(BaseModel):
     mute_on_entry: bool = False
     host_video_on: bool = True
     participant_video_on: bool = True
+    waiting_room: bool = False
 
 
 class InstantMeetingCreate(BaseModel):
@@ -182,6 +183,9 @@ class ChatMessageOut(BaseModel):
     id: int
     participant_id: int
     sender_name: str
+    # Set for private messages; None means the message was sent to everyone.
+    recipient_id: int | None = None
+    recipient_name: str | None = None
     content: str
     sent_at: datetime
 

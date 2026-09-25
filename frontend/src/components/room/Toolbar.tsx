@@ -18,6 +18,7 @@ import {
   MonitorUp,
   MoreHorizontal,
   PictureInPicture2,
+  ShieldCheck,
   SmilePlus,
   UserPlus,
   Users,
@@ -26,6 +27,9 @@ import {
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { MenuItem, Popover } from "@/components/ui/Popover";
+import type { Feedback, Security } from "@/lib/rtc/room-client";
+import { FEEDBACK } from "./feedback";
+import { SecurityMenu } from "./SecurityMenu";
 
 export const REACTIONS = ["👏", "👍", "❤️", "😂", "😮", "🎉"];
 
@@ -142,6 +146,13 @@ export interface ToolbarProps {
   sharing: boolean;
   handRaised: boolean;
   isHost: boolean;
+  isModerator: boolean;
+  security: Security;
+  onSecurityChange: (patch: Partial<Security>) => void;
+  /** People in the waiting room (moderators only). */
+  waitingCount: number;
+  feedback: Feedback | null;
+  onFeedback: (value: Feedback | null) => void;
   participantCount: number;
   unreadMessages: number;
   panel: "participants" | "chat" | null;
@@ -174,7 +185,8 @@ export interface ToolbarProps {
 }
 
 export function Toolbar(props: ToolbarProps) {
-  const [menu, setMenu] = useState<"mic" | "cam" | "reactions" | "more" | "leave" | null>(null);
+  const [menu, setMenu] = useState<"mic" | "cam" | "security" | "reactions" | "more" | "leave" | null>(null);
+  const securityBtn = useRef<HTMLDivElement>(null);
   const micCaret = useRef<HTMLButtonElement>(null);
   const camCaret = useRef<HTMLButtonElement>(null);
   const reactionsBtn = useRef<HTMLDivElement>(null);
@@ -223,14 +235,19 @@ export function Toolbar(props: ToolbarProps) {
       </div>
 
       <div className="flex items-center">
+        {props.isModerator && (
+          <div ref={securityBtn} className="hidden md:block">
+            <ControlButton label="Security" onClick={() => toggle("security")} icon={<ShieldCheck className="h-6 w-6" />} />
+          </div>
+        )}
         <ControlButton
           label="Participants"
           shortcut="Alt+U"
           onClick={() => props.onTogglePanel("participants")}
           active={props.panel === "participants"}
           icon={<Users className="h-6 w-6" />}
-          badge={props.participantCount}
-          badgeTone="count"
+          badge={props.waitingCount ? `+${props.waitingCount}` : props.participantCount}
+          badgeTone={props.waitingCount ? "alert" : "count"}
         />
         <ControlButton
           label="Chat"
@@ -328,6 +345,31 @@ export function Toolbar(props: ToolbarProps) {
         >
           <Hand className="h-4 w-4" /> {props.handRaised ? "Lower Hand" : "Raise Hand"}
         </button>
+        <div className="mt-2 flex justify-between border-t border-white/10 pt-2" role="group" aria-label="Non-verbal feedback">
+          {FEEDBACK.map((f) => (
+            <button
+              key={f.value}
+              onClick={() => {
+                props.onFeedback(props.feedback === f.value ? null : f.value);
+                close();
+              }}
+              aria-pressed={props.feedback === f.value}
+              title={f.label}
+              aria-label={f.label}
+              className={clsx(
+                "flex w-[52px] flex-col items-center gap-0.5 rounded-lg py-1 text-lg hover:bg-white/10",
+                props.feedback === f.value && "bg-white/15 ring-1 ring-[#6ea1ff]",
+              )}
+            >
+              {f.emoji}
+              <span className="text-[10px] leading-tight text-room-text/70">{f.label}</span>
+            </button>
+          ))}
+        </div>
+      </Popover>
+
+      <Popover open={menu === "security"} onClose={close} anchorRef={securityBtn} className="bottom-[76px] left-1/2 w-64 -translate-x-[70%] bg-[#2b2b2b] p-1.5">
+        <SecurityMenu security={props.security} onChange={props.onSecurityChange} />
       </Popover>
 
       <Popover open={menu === "more"} onClose={close} anchorRef={moreBtn} className="bottom-[76px] right-4 w-60 bg-[#2b2b2b] p-1.5 sm:left-1/2 sm:right-auto sm:translate-x-8">

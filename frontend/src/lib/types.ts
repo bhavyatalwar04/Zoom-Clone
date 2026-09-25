@@ -1,6 +1,6 @@
 export type MeetingType = "instant" | "scheduled";
 export type MeetingStatus = "scheduled" | "live" | "ended";
-export type ParticipantRole = "host" | "attendee";
+export type ParticipantRole = "host" | "co_host" | "attendee";
 
 export interface User {
   id: number;
@@ -16,6 +16,7 @@ export interface MeetingOptions {
   mute_on_entry: boolean;
   host_video_on: boolean;
   participant_video_on: boolean;
+  waiting_room: boolean;
 }
 
 export interface Meeting extends MeetingOptions {
@@ -89,6 +90,9 @@ export interface ChatMessage {
   id: number;
   participant_id: number;
   sender_name: string;
+  /** Set for private messages; null means "to Everyone". */
+  recipient_id: number | null;
+  recipient_name: string | null;
   content: string;
   sent_at: string;
 }

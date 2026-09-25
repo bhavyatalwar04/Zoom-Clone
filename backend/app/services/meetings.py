@@ -107,6 +107,7 @@ def to_meeting_out(meeting: Meeting, current_user: User) -> MeetingOut:
         mute_on_entry=meeting.mute_on_entry,
         host_video_on=meeting.host_video_on,
         participant_video_on=meeting.participant_video_on,
+        waiting_room=meeting.waiting_room,
         created_at=meeting.created_at,
         started_at=meeting.started_at,
         ended_at=meeting.ended_at,
@@ -133,6 +134,8 @@ def to_chat_out(message: ChatMessage) -> ChatMessageOut:
         id=message.id,
         participant_id=message.participant_id,
         sender_name=message.participant.display_name,
+        recipient_id=message.recipient_participant_id,
+        recipient_name=message.recipient.display_name if message.recipient else None,
         content=message.content,
         sent_at=message.sent_at,
     )
@@ -267,6 +270,7 @@ def _apply_schedule(db: Session, meeting: Meeting, data: ScheduledMeetingCreate)
     meeting.mute_on_entry = data.mute_on_entry
     meeting.host_video_on = data.host_video_on
     meeting.participant_video_on = data.participant_video_on
+    meeting.waiting_room = data.waiting_room
     _set_invitees(db, meeting, data.invitees)
 
 
@@ -304,6 +308,8 @@ def join_meeting(db: Session, meeting: Meeting, user: User, data: JoinRequest) -
     is_host = bool(data.start_token) and data.start_token == meeting.start_token
 
     if not is_host:
+        if meeting.is_locked:
+            raise AppError(423, "MEETING_LOCKED", "This meeting has been locked by the host.")
         if meeting.passcode and (data.passcode or "").strip() != meeting.passcode:
             code = "PASSCODE_REQUIRED" if not data.passcode else "INVALID_PASSCODE"
             raise AppError(401, code, "Incorrect meeting passcode. Please try again.")
@@ -353,6 +359,7 @@ def end_meeting(db: Session, meeting_id: int) -> None:
     now = utcnow()
     meeting.status = MeetingStatus.ENDED
     meeting.ended_at = now
+    meeting.is_locked = False  # the lock only applies to the session it was set in
     for participant in meeting.participants:
         if participant.left_at is None:
             participant.left_at = now

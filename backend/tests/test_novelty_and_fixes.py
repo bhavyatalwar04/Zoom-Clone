@@ -68,6 +68,7 @@ def test_host_is_handed_over_when_host_leaves(client):
             host_ws.close()
             assert guest_ws.receive_json()["type"] == "peer-left"
             assert guest_ws.receive_json() == {"type": "host-changed", "id": guest_id}
+            assert guest_ws.receive_json() == {"type": "waiting-list", "waiting": []}  # new host sees the waiting room
 
         # The new host can now use host controls.
         guest_ws.send_json({"type": "host:captions", "enabled": True})

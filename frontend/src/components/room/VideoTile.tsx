@@ -1,8 +1,10 @@
 "use client";
 
 import clsx from "clsx";
-import { Hand, MicOff, WifiOff } from "lucide-react";
+import { Hand, MicOff, Pin, PinOff, Star, WifiOff } from "lucide-react";
 import { memo, useEffect, useRef } from "react";
+import type { Feedback } from "@/lib/rtc/room-client";
+import { feedbackEmoji } from "./feedback";
 
 export interface TileModel {
   id: number;
@@ -15,6 +17,9 @@ export interface TileModel {
   audio: boolean;
   screen: boolean;
   handRaised: boolean;
+  feedback: Feedback | null;
+  pinned: boolean;
+  spotlighted: boolean;
   reaction: { key: number; emoji: string } | null;
   speaking: boolean;
   connecting: boolean;
@@ -48,15 +53,18 @@ interface VideoTileProps {
   variant?: "grid" | "main" | "strip";
   className?: string;
   style?: React.CSSProperties;
+  /** Shows a Pin / Unpin button on hover. */
+  onTogglePin?: (id: number) => void;
 }
 
-export const VideoTile = memo(function VideoTile({ tile, showName = true, variant = "grid", className, style }: VideoTileProps) {
+export const VideoTile = memo(function VideoTile({ tile, showName = true, variant = "grid", className, style, onTogglePin }: VideoTileProps) {
   const contain = tile.screen || variant === "main";
+  const feedback = feedbackEmoji(tile.feedback);
   return (
     <div
       style={style}
       className={clsx(
-        "relative overflow-hidden rounded-lg bg-room-tile",
+        "group relative overflow-hidden rounded-lg bg-room-tile",
         tile.speaking && tile.audio ? "ring-[3px] ring-[#23d959]" : "ring-1 ring-white/5",
         className,
       )}
@@ -85,8 +93,24 @@ export const VideoTile = memo(function VideoTile({ tile, showName = true, varian
         </div>
       )}
 
-      {(tile.handRaised || tile.reaction) && (
+      {onTogglePin && variant !== "strip" && (
+        <button
+          onClick={() => onTogglePin(tile.id)}
+          className="absolute right-2 top-2 z-10 hidden items-center gap-1 rounded-md bg-black/60 px-2 py-1 text-xs text-white hover:bg-black/80 group-hover:flex"
+          aria-label={tile.pinned ? `Unpin ${tile.name}` : `Pin ${tile.name}`}
+        >
+          {tile.pinned ? <PinOff className="h-3.5 w-3.5" /> : <Pin className="h-3.5 w-3.5" />}
+          {tile.pinned ? "Unpin" : "Pin"}
+        </button>
+      )}
+
+      {(tile.handRaised || tile.reaction || feedback) && (
         <div className="absolute left-2 top-2 flex items-center gap-1">
+          {feedback && (
+            <span className="flex h-8 w-8 items-center justify-center rounded-md bg-black/60 text-lg" aria-label={`Feedback ${tile.feedback}`}>
+              {feedback}
+            </span>
+          )}
           {tile.handRaised && (
             <span className="flex h-8 w-8 items-center justify-center rounded-md bg-[#f7c948] text-ink shadow">
               <Hand className="h-4 w-4" />
@@ -103,6 +127,8 @@ export const VideoTile = memo(function VideoTile({ tile, showName = true, varian
       {showName && (
         <div className="absolute bottom-1.5 left-1.5 flex max-w-[calc(100%-12px)] items-center gap-1 rounded bg-black/60 px-1.5 py-0.5 text-xs text-white">
           {!tile.audio && <MicOff className="h-3.5 w-3.5 shrink-0 text-[#ff4d4d]" aria-label="Muted" />}
+          {tile.spotlighted && <Star className="h-3.5 w-3.5 shrink-0 fill-amber-400 text-amber-400" aria-label="Spotlighted" />}
+          {tile.pinned && <Pin className="h-3.5 w-3.5 shrink-0" aria-label="Pinned" />}
           <span className="truncate">
             {tile.name}
             {tile.screen && variant === "main" ? "'s screen" : ""}

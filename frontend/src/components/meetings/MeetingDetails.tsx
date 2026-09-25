@@ -91,7 +91,7 @@ export function MeetingDetails({ meeting: m, onBack, onEdit, onDelete }: Meeting
         )}
         {!past && (
           <Row label="Options">
-            {[m.join_before_host && "Participants can join anytime", m.mute_on_entry && "Mute participants upon entry"]
+            {[m.waiting_room && "Waiting room", m.join_before_host && "Participants can join anytime", m.mute_on_entry && "Mute participants upon entry"]
               .filter(Boolean)
               .join(" · ") || "—"}
           </Row>

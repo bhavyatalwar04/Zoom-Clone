@@ -25,7 +25,46 @@ export interface PeerInfo {
   video: boolean;
   screen: boolean;
   hand_raised: boolean;
+  feedback: Feedback | null;
+  /** Breakout room id, null in the main session. */
+  group: string | null;
 }
+
+export type Feedback = "yes" | "no" | "slower" | "faster" | "away";
+
+export interface Security {
+  locked: boolean;
+  waiting_room: boolean;
+  allow_share: boolean;
+  allow_chat: boolean;
+  allow_rename: boolean;
+  allow_unmute: boolean;
+}
+
+export interface WaitingPerson {
+  id: number;
+  display_name: string;
+}
+
+export type HostAction =
+  | "mute-all"
+  | "mute"
+  | "ask-unmute"
+  | "stop-video"
+  | "remove"
+  | "end"
+  | "rename"
+  | "make-host"
+  | "make-cohost"
+  | "revoke-cohost"
+  | "spotlight"
+  | "lower-hands"
+  | "admit"
+  | "admit-all"
+  | "security";
+
+export const isModerator = (peer: Pick<PeerInfo, "role"> | null | undefined) =>
+  peer?.role === "host" || peer?.role === "co_host";
 
 export interface RemotePeer extends PeerInfo {
   stream: MediaStream | null;
@@ -47,7 +86,7 @@ export interface LiveCaption {
   at: number;
 }
 
-export type ConnectionStatus = "connecting" | "connected" | "reconnecting" | "closed";
+export type ConnectionStatus = "connecting" | "waiting" | "connected" | "reconnecting" | "closed";
 export type EndReason = "left" | "ended" | "removed" | "error";
 
 export type RoomNotice =
@@ -56,6 +95,7 @@ export type RoomNotice =
   | { kind: "force-stop-video" }
   | { kind: "now-host" }
   | { kind: "captions"; enabled: boolean }
+  | { kind: "blocked"; message: string }
   | { kind: "error"; message: string }
   | { kind: "media-error"; message: string };
 
@@ -77,6 +117,12 @@ export interface RoomSnapshot {
   liveCaptions: LiveCaption[];
   /** Finalised captions, i.e. the meeting transcript so far. */
   transcript: TranscriptSegment[];
+  security: Security;
+  /** Moderators only: people in the waiting room. */
+  waiting: WaitingPerson[];
+  /** Meeting title shown while I am in the waiting room. */
+  waitingTitle: string | null;
+  spotlightId: number | null;
   notice: { id: number; notice: RoomNotice } | null;
 }
 
@@ -94,7 +140,14 @@ type ServerMessage =
       messages: ChatMessage[];
       transcript: TranscriptSegment[];
       captions_enabled: boolean;
+      security: Security;
+      spotlight: number | null;
+      waiting: WaitingPerson[];
     }
+  | { type: "waiting"; title: string }
+  | { type: "waiting-list"; waiting: WaitingPerson[] }
+  | { type: "security"; security: Security }
+  | { type: "spotlight"; id: number | null }
   | { type: "host-changed"; id: number }
   | { type: "captions-state"; enabled: boolean }
   | { type: "caption"; from: number; name: string; text: string; final: boolean; segment?: TranscriptSegment }
@@ -104,7 +157,7 @@ type ServerMessage =
   | { type: "signal"; from: number; data: SignalData }
   | { type: "chat"; message: ChatMessage }
   | { type: "reaction"; from: number; emoji: string }
-  | { type: "force-mute" | "ask-unmute" | "force-stop-video" | "removed" | "meeting-ended" | "pong" }
+  | { type: "force-mute" | "ask-unmute" | "force-stop-video" | "force-stop-share" | "removed" | "meeting-ended" | "pong" }
   | { type: "error"; code: string; message: string };
 
 type SignalData = { sdp: RTCSessionDescriptionInit } | { candidate: RTCIceCandidateInit };
@@ -126,6 +179,14 @@ const PING_INTERVAL_MS = 20000;
 const MAX_RECONNECT_ATTEMPTS = 5;
 const CAPTION_TTL_MS = 5500;
 const INTERIM_CAPTION_INTERVAL_MS = 250;
+const OPEN_SECURITY: Security = {
+  locked: false,
+  waiting_room: false,
+  allow_share: true,
+  allow_chat: true,
+  allow_rename: true,
+  allow_unmute: true,
+};
 
 export class RoomClient {
   private ws: WebSocket | null = null;
@@ -139,6 +200,8 @@ export class RoomClient {
   private noticeId = 0;
   private lastInterimCaption = 0;
   private mediaRequested = false;
+  /** The host asked me to unmute, which is allowed even when unmuting is disabled. */
+  private unmuteGranted = false;
   /** Tail of the message queue: each server message is handled after the previous one. */
   private inbox: Promise<void> = Promise.resolve();
 
@@ -169,6 +232,10 @@ export class RoomClient {
       captionsEnabled: false,
       liveCaptions: [],
       transcript: [],
+      security: OPEN_SECURITY,
+      waiting: [],
+      waitingTitle: null,
+      spotlightId: null,
       notice: null,
     };
   }
@@ -272,9 +339,21 @@ export class RoomClient {
 
   private async handleMessage(msg: ServerMessage) {
     switch (msg.type) {
+      case "waiting":
+        this.update({ status: "waiting", waitingTitle: msg.title });
+        break;
       case "welcome": {
+        // Unmuting is disabled for participants: join muted (the server enforces it too).
+        if (!msg.security.allow_unmute && !isModerator(msg.self) && this.audioEnabled) {
+          this.audioEnabled = false;
+          if (this.audioTrack) this.audioTrack.enabled = false;
+        }
         this.update({
           status: "connected",
+          waitingTitle: null,
+          security: msg.security,
+          spotlightId: msg.spotlight,
+          waiting: msg.waiting,
           self: { ...msg.self, audio: this.audioEnabled, video: !!this.cameraTrack, screen: !!this.screenTrack },
           messages: msg.messages,
           transcript: msg.transcript,
@@ -293,7 +372,26 @@ export class RoomClient {
         break; // the newcomer will send us an offer
       }
       case "peer-updated":
-        this.updatePeer(msg.peer.id, msg.peer);
+        if (msg.peer.id === this.snapshot.self?.id) {
+          // Changes made to me by the server / a moderator. My media state stays local.
+          const { role, display_name, hand_raised, feedback, group } = msg.peer;
+          this.update({ self: { ...this.snapshot.self, role, display_name, hand_raised, feedback, group } });
+        } else {
+          this.updatePeer(msg.peer.id, msg.peer);
+        }
+        break;
+      case "waiting-list":
+        this.update({ waiting: msg.waiting });
+        break;
+      case "security":
+        this.update({ security: msg.security });
+        break;
+      case "spotlight":
+        this.update({ spotlightId: msg.id });
+        break;
+      case "force-stop-share":
+        await this.stopScreenShare();
+        this.notify({ kind: "blocked", message: "The host has disabled screen sharing for participants." });
         break;
       case "host-changed":
         if (msg.id === this.snapshot.self?.id) {
@@ -333,6 +431,7 @@ export class RoomClient {
         this.notify({ kind: "force-stop-video" });
         break;
       case "ask-unmute":
+        this.unmuteGranted = true;
         this.notify({ kind: "ask-unmute" });
         break;
       case "removed":
@@ -464,7 +563,21 @@ export class RoomClient {
     return !!this.audioTrack;
   }
 
+  /** Security menu: may I unmute / share right now? */
+  private get canUnmute() {
+    return this.snapshot.security.allow_unmute || isModerator(this.snapshot.self) || this.unmuteGranted;
+  }
+
+  private get canShare() {
+    return this.snapshot.security.allow_share || isModerator(this.snapshot.self);
+  }
+
   async setAudioEnabled(enabled: boolean) {
+    if (enabled && !this.canUnmute) {
+      this.notify({ kind: "blocked", message: "The host has not allowed participants to unmute themselves." });
+      return;
+    }
+    if (enabled) this.unmuteGranted = false;
     if (enabled && !this.audioTrack) {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -502,6 +615,10 @@ export class RoomClient {
 
   async startScreenShare(): Promise<boolean> {
     if (this.screenTrack) return true;
+    if (!this.canShare) {
+      this.notify({ kind: "blocked", message: "Only the host can share the screen in this meeting." });
+      return false;
+    }
     try {
       const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
       const track = stream.getVideoTracks()[0];
@@ -565,9 +682,19 @@ export class RoomClient {
 
   // ------------------------------------------------------------------ meeting actions
 
-  sendChat(text: string) {
+  /** Chat to everyone, or privately to one participant when `to` is given. */
+  sendChat(text: string, to: number | null = null) {
     const trimmed = text.trim();
-    if (trimmed) this.send({ type: "chat", text: trimmed });
+    if (trimmed) this.send({ type: "chat", text: trimmed, ...(to !== null && { to }) });
+  }
+
+  setFeedback(value: Feedback | null) {
+    if (this.snapshot.self) this.update({ self: { ...this.snapshot.self, feedback: value } });
+    this.send({ type: "feedback", value });
+  }
+
+  renameSelf(name: string) {
+    this.send({ type: "rename", name });
   }
 
   sendReaction(emoji: string) {
@@ -587,10 +714,9 @@ export class RoomClient {
     }, REACTION_TTL_MS);
   }
 
-  hostAction(action: "mute-all" | "end"): void;
-  hostAction(action: "mute" | "ask-unmute" | "stop-video" | "remove", target: number): void;
-  hostAction(action: string, target?: number) {
-    this.send({ type: `host:${action}`, target });
+  /** Host / co-host commands; the server checks the role again. */
+  hostAction(action: HostAction, payload: { target?: number | null; name?: string } & Partial<Security> = {}) {
+    this.send({ type: `host:${action}`, ...payload });
   }
 
   // ------------------------------------------------------------------ captions & insights
