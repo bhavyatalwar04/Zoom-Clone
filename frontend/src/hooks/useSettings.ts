@@ -12,6 +12,8 @@ export interface ClientSettings {
   mirrorVideo: boolean;
   showNamesOnVideo: boolean;
   displayName: string;
+  /** Name remembered for joining as a guest from an invite link (kept apart from the account's name). */
+  guestName: string;
   status: "available" | "away" | "busy";
 }
 
@@ -24,6 +26,7 @@ const DEFAULTS: ClientSettings = {
   mirrorVideo: true,
   showNamesOnVideo: true,
   displayName: "",
+  guestName: "",
   status: "available",
 };
 

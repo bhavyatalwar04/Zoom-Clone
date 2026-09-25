@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ZoomLogo } from "@/components/ui/ZoomLogo";
+import { useSignedIn } from "@/hooks/useAuth";
 import { useLocalPreview } from "@/hooks/useLocalPreview";
 import { useMe } from "@/hooks/useMeetings";
 import { useSettings } from "@/hooks/useSettings";
@@ -21,6 +22,7 @@ export interface MeetingFlowProps {
   passcode: string | null;
   /** Host start token (?st=), present when the host starts the meeting from the dashboard. */
   startToken: string | null;
+  /** Set by the dashboard's join controls (?name=). Absent on an invite link. */
   name: string | null;
   audio: boolean | null;
   video: boolean | null;
@@ -54,12 +56,19 @@ export function MeetingFlow(props: MeetingFlowProps) {
 function MeetingFlowInner({ code, passcode: linkPasscode, startToken, name: linkName, audio, video, share, onRejoin }: MeetingFlowProps & { onRejoin: () => void }) {
   const router = useRouter();
   const { data: me } = useMe();
+  const signedIn = useSignedIn();
   const [settings, updateSettings] = useSettings();
   const preview = useLocalPreview({ audio: audio ?? !settings.muteOnJoin, video: video ?? settings.startWithVideo });
 
+  // Someone who opened an invite link joins as a guest, as in Zoom: without signing in they are
+  // only nominally the demo user, so its name is never offered to them - just the name they
+  // used as a guest before on this browser. The host (?st=), a signed-in user and the
+  // dashboard's join controls (?name=) join with the account's name.
+  const isGuest = !startToken && !signedIn && linkName === null;
   const [stage, setStage] = useState<Stage>({ kind: "loading" });
   const [meeting, setMeeting] = useState<MeetingLookup | null>(null);
-  const [name, setName] = useState(linkName ?? settings.displayName);
+  const [name, setName] = useState(linkName ?? (isGuest ? settings.guestName : settings.displayName));
+  const prefilled = useRef(isGuest || !!name);
   const [remember, setRemember] = useState(true);
   const [passcode, setPasscode] = useState(linkPasscode ?? "");
   const [passcodeRejected, setPasscodeRejected] = useState(false);
@@ -67,9 +76,12 @@ function MeetingFlowInner({ code, passcode: linkPasscode, startToken, name: link
   const [joining, setJoining] = useState(false);
   const joiningRef = useRef(false);
 
+  // Fill in the account's name once it has loaded. Only once: clearing the field must leave it empty.
   useEffect(() => {
-    if (!name && me) setName(me.full_name);
-  }, [me, name]);
+    if (prefilled.current || !me) return;
+    prefilled.current = true;
+    setName((current) => current || me.full_name);
+  }, [me]);
 
   useEffect(() => {
     api
@@ -88,7 +100,7 @@ function MeetingFlowInner({ code, passcode: linkPasscode, startToken, name: link
     setError(null);
     try {
       const res = await api.join(code, { display_name: name.trim(), passcode: passcode || null, start_token: startToken });
-      if (remember) updateSettings({ displayName: name.trim() });
+      if (remember) updateSettings(isGuest ? { guestName: name.trim() } : { displayName: name.trim() });
       setStage({
         kind: "room",
         join: res,
@@ -109,7 +121,7 @@ function MeetingFlowInner({ code, passcode: linkPasscode, startToken, name: link
       joiningRef.current = false;
       setJoining(false);
     }
-  }, [code, name, passcode, startToken, remember, updateSettings, preview]);
+  }, [code, name, passcode, startToken, remember, isGuest, updateSettings, preview]);
 
   // While waiting for the host, keep retrying the join.
   useEffect(() => {
