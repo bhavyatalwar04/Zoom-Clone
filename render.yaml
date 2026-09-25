@@ -1,0 +1,26 @@
+# Render Blueprint for the FastAPI backend (REST + WebSocket signalling).
+# Render → New → Blueprint → pick this repository. The frontend is deployed separately on Vercel.
+services:
+  - type: web
+    name: zoom-clone-api
+    runtime: python
+    plan: free
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    # Exactly one worker: live meeting rooms are held in this process's memory, so every
+    # participant of a meeting must reach the same process.
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1
+    healthCheckPath: /api/health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.10.11
+      - key: SECRET_KEY
+        generateValue: true
+      # The Vercel URL, e.g. https://zoom-clone.vercel.app (used in invite links).
+      - key: FRONTEND_URL
+        sync: false
+      # Comma separated; usually the same Vercel URL.
+      - key: CORS_ORIGINS
+        sync: false
+      - key: SEED_ON_STARTUP
+        value: "true"
