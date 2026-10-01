@@ -3,9 +3,11 @@
 import clsx from "clsx";
 import { Circle, Download, Eraser, Highlighter, Minus, Pen, Square, Trash2, Type, Undo2, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { TileModel } from "@/components/room/VideoTile";
 import type { WhiteboardStroke, WhiteboardTool } from "@/lib/types";
 import { hitTest, newStrokeId } from "@/lib/whiteboard/render";
 import { WhiteboardCanvas, type WhiteboardCanvasHandle } from "./WhiteboardCanvas";
+import { WhiteboardVideoPanel } from "./WhiteboardVideoPanel";
 
 type Tool = WhiteboardTool | "eraser";
 
@@ -28,13 +30,16 @@ interface WhiteboardProps {
   openedByName: string | null;
   canManage: boolean;
   title: string;
+  /** Everyone's video, shown in a floating panel beside the board. */
+  tiles: TileModel[];
+  showNames: boolean;
   onStroke: (chunk: WhiteboardStroke, done: boolean) => void;
   onErase: (ids: string[]) => void;
   onClear: () => void;
   onClose: () => void;
 }
 
-export function Whiteboard({ strokes, selfId, openedByName, canManage, title, onStroke, onErase, onClear, onClose }: WhiteboardProps) {
+export function Whiteboard({ strokes, selfId, openedByName, canManage, title, tiles, showNames, onStroke, onErase, onClear, onClose }: WhiteboardProps) {
   const board = useRef<WhiteboardCanvasHandle>(null);
   const [tool, setTool] = useState<Tool>("pen");
   const [color, setColor] = useState(COLORS[1]);
@@ -127,7 +132,7 @@ export function Whiteboard({ strokes, selfId, openedByName, canManage, title, on
   const visible = useMemo(() => (preview ? [...strokes, preview] : strokes), [strokes, preview]);
 
   return (
-    <div className="flex h-full w-full flex-col gap-2 p-2">
+    <div className="relative flex h-full w-full flex-col gap-2 p-2">
       <div className="flex flex-wrap items-center gap-1 rounded-lg bg-[#2b2b2b] px-2 py-1.5 text-room-text" role="toolbar" aria-label="Whiteboard tools">
         {TOOLS.map((t) => (
           <button
@@ -210,6 +215,7 @@ export function Whiteboard({ strokes, selfId, openedByName, canManage, title, on
           )}
         </WhiteboardCanvas>
       </div>
+      <WhiteboardVideoPanel tiles={tiles} showNames={showNames} />
     </div>
   );
 }

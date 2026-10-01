@@ -465,6 +465,8 @@ export function MeetingRoom({ join, initialStream, audio, video, startShare, onE
               openedByName={room.whiteboard.opened_by_name}
               canManage={whiteboardManager}
               title={join.meeting.title}
+              tiles={hideSelf ? tiles.filter((t) => !t.isSelf) : tiles}
+              showNames={settings.showNamesOnVideo}
               onStroke={(chunk, done) => client.sendStroke(chunk, done)}
               onErase={(ids) => client.eraseStrokes(ids)}
               onClear={() => client.clearWhiteboard()}
